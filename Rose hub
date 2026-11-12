@@ -81,7 +81,7 @@ OpenButton.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
 OpenButton.Position = UDim2.new(0, 20, 0.4, 0)
 OpenButton.Size = UDim2.new(0, 45, 0, 45)
 OpenButton.Font = Enum.Font.GothamBold
-OpenButton.Text = "🌸"
+OpenButton.Text = "🌹"
 OpenButton.TextColor3 = Color3.fromRGB(255, 150, 200)
 OpenButton.TextSize = 20
 OpenButton.Draggable = true
@@ -133,7 +133,7 @@ TitleText.Parent = TitleBar
 TitleText.BackgroundTransparency = 1
 TitleText.Size = UDim2.new(1, 0, 1, 0)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.Text = "🌸 ROSE HUB"
+TitleText.Text = "🌹 ROSE HUB"
 TitleText.TextColor3 = Color3.fromRGB(255, 150, 200)
 TitleText.TextSize = 13
 
@@ -279,7 +279,7 @@ AntiAfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 AntiAfkBtn.TextSize = 11
 local AABtnCorner = Instance.new("UICorner"); AABtnCorner.CornerRadius = UDim.new(0, 6); AABtnCorner.Parent = AntiAfkBtn
 
--- Nút Bật/Tắt Anti Lag (Ẩn Pet, Xóa vật thể thừa mượt mà không crash)
+-- Nút Bật/Tắt Anti Lag 
 local AntiLagBtn = Instance.new("TextButton")
 AntiLagBtn.Parent = SettingContainer
 AntiLagBtn.BackgroundColor3 = settings.antiLagEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
