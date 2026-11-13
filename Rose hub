@@ -180,7 +180,8 @@ local SellPosLabel = Instance.new("TextLabel", MainContainer)
 SellPosLabel.BackgroundTransparency = 1
 SellPosLabel.Position = UDim2.new(0, 0, 0.18, 0)
 SellPosLabel.Size = UDim2.new(1, 0, 0, 24)
-SellPosLabel.Font = Enum.Font.GothamBSellPosLabel.Text = "💰 Điểm Bán: X:55, Y:6, Z:-28"
+SellPosLabel.Font = Enum.Font.GothamBold
+SellPosLabel.Text = "💰 Điểm Bán: X:55, Y:6, Z:-28"
 SellPosLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
 SellPosLabel.TextSize = 11
 
