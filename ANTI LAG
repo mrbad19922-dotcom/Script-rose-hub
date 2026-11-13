@@ -1,4 +1,4 @@
--- LocalScript: Anti Lag + FPS Counter (client-side)
+-- LocalScript: Anti Lag v2 (client-side)
 -- Đặt trong StarterPlayer > StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -11,165 +11,167 @@ local player = Players.LocalPlayer
 
 -- ===== CẤU HÌNH =====
 local CONFIG = {
-	BatchSize = 25,          -- số vật thể xử lý mỗi frame
-	MaxFrameTime = 8,        -- ms tối đa dành cho dọn dẹp mỗi frame
-	CleanRadius = 150,       -- vật thể cách người chơi xa hơn mức này sẽ bị ẩn
-	EffectBatch = 200,       -- số hiệu ứng xử lý trước khi nghỉ một nhịp
+	FrameBudgetMs = 4,      -- ms tối đa mỗi frame cho anti lag (máy yếu thì giảm xuống 2)
+	CleanRadius = 120,      -- vật thể xa hơn mức này sẽ bị ẩn hình
 	ToggleKey = Enum.KeyCode.RightControl,
 }
 
-local POST_EFFECT_CLASSES = {
+local POST_EFFECT = {
 	BloomEffect = true, BlurEffect = true, ColorCorrectionEffect = true,
 	SunRaysEffect = true, DepthOfFieldEffect = true,
 }
-local PARTICLE_CLASSES = {
+local PARTICLE = {
 	ParticleEmitter = true, Trail = true, Beam = true,
 	Fire = true, Smoke = true, Sparkles = true,
 }
 
 -- ===== TRẠNG THÁI =====
-local antiLagEnabled = false
-local originalStates = {}     -- trạng thái gốc của part
-local effectStates = {}       -- trạng thái gốc của hiệu ứng
-local processQueue = {}
-local queueIndex = 1
+local BUDGET = CONFIG.FrameBudgetMs / 1000
+local enabled = false
+local stack = {}
+local parts, partInfo, partCursor = {}, {}, 1
+local effects, effectInfo, effectCursor = {}, {}, 1
 local originalFogEnd = Lighting.FogEnd
 local originalGlobalShadows = Lighting.GlobalShadows
 
--- ===== HÀM TIỆN ÍCH =====
-local function getRoot()
+-- ===== TIỆN ÍCH =====
+local function getRootPos()
 	local char = player.Character
-	return char and char:FindFirstChild("HumanoidRootPart")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	return root and root.Position
 end
 
-local function getDistance(part)
-	local root = getRoot()
-	if not root then return 0 end
-	return (part.Position - root.Position).Magnitude
-end
-
-local function isSafeToHide(obj)
-	if player.Character and obj:IsDescendantOf(player.Character) then return false end
-	local model = obj:FindFirstAncestorOfClass("Model")
-	if model and model:FindFirstChildOfClass("Humanoid") then return false end
-	if obj.CanCollide then return false end
-	return true
-end
-
--- ===== ANTI LAG: ẨN VẬT THỂ XA =====
-local function applyLag(obj)
-	if not obj:IsA("BasePart") then return end
-	if originalStates[obj] then return end
-	if not isSafeToHide(obj) then return end
-
-	originalStates[obj] = {
-		CastShadow = obj.CastShadow,
-	}
-
-	if getDistance(obj) > CONFIG.CleanRadius then
-		obj.LocalTransparencyModifier = 1
+-- Nhân vật (mình, người chơi khác, NPC) luôn giữ nguyên để không mất mục tiêu
+local function isProtected(part)
+	local node = part
+	while node and node ~= Workspace do
+		if node:IsA("Model") and node:FindFirstChildOfClass("Humanoid") then
+			return true
+		end
+		node = node.Parent
 	end
-	obj.CastShadow = false
+	return false
 end
 
-local function restoreParts()
-	for obj, state in pairs(originalStates) do
-		if obj and obj.Parent then
-			obj.LocalTransparencyModifier = 0
-			obj.CastShadow = state.CastShadow
+-- ===== PHÂN LOẠI VẬT THỂ =====
+local function classify(obj)
+	if obj:IsA("BasePart") then
+		if not obj:IsA("Terrain") and partInfo[obj] == nil then
+			partInfo[obj] = { hidden = false }
+			parts[#parts + 1] = obj
+		end
+	elseif obj:IsA("Atmosphere") or POST_EFFECT[obj.ClassName] or PARTICLE[obj.ClassName] then
+		if effectInfo[obj] == nil then
+			local prop = obj:IsA("Atmosphere") and "Density" or "Enabled"
+			effectInfo[obj] = {
+				prop = prop,
+				value = obj[prop],
+				off = (prop == "Density") and 0 or false,
+			}
+			effects[#effects + 1] = obj
 		end
 	end
-	originalStates = {}
 end
 
-local function buildQueue()
-	processQueue = {}
-	queueIndex = 1
-	local root = getRoot()
-	if not root then return end
-	for _, obj in ipairs(Workspace:GetDescendants()) do
-		if obj:IsA("BasePart") then
-			table.insert(processQueue, obj)
+-- ===== XỬ LÝ TỪNG PART (mỗi lần một ít) =====
+-- Trả về true nếu giữ lại trong danh sách, false nếu bỏ
+local function stepPart(p)
+	local info = partInfo[p]
+	local root = getRootPos()
+	local far = root and (p.Position - root).Magnitude > CONFIG.CleanRadius
+
+	if enabled and p.Parent and far and not isProtected(p) then
+		if not info.hidden then
+			info.hidden = true
+			info.cast = p.CastShadow
+			info.ltm = p.LocalTransparencyModifier
+		end
+		-- Game có reset lại thì lần kiểm tra sau sẽ ẩn lại
+		p.LocalTransparencyModifier = 1
+		p.CastShadow = false
+		return true
+	end
+
+	-- Gần lại, được bảo vệ, hoặc tắt anti lag: trả về trạng thái gốc
+	if info.hidden then
+		info.hidden = false
+		p.LocalTransparencyModifier = info.ltm
+		p.CastShadow = info.cast
+	end
+
+	if enabled and p.Parent then return true end
+	partInfo[p] = nil
+	return false
+end
+
+-- ===== XỬ LÝ TỪNG HIỆU ỨNG (mỗi lần một ít) =====
+local function stepEffect(obj)
+	local info = effectInfo[obj]
+	if enabled and obj.Parent then
+		-- Game bật lại thì tắt ngay, không cần kết nối sự kiện nên nhẹ máy
+		if obj[info.prop] ~= info.off then
+			obj[info.prop] = info.off
+		end
+		return true
+	end
+	obj[info.prop] = info.value
+	effectInfo[obj] = nil
+	return false
+end
+
+-- Duyệt danh sách trong ngân sách thời gian, bỏ phần tử đã không còn dùng
+local function processList(list, step, cursor, t0)
+	local i = cursor
+	while i <= #list and os.clock() - t0 < BUDGET do
+		if step(list[i]) then
+			i += 1
+		else
+			local last = #list
+			list[i] = list[last]
+			list[last] = nil
 		end
 	end
-	-- Ưu tiên vật xa người chơi xử lý trước
-	table.sort(processQueue, function(a, b)
-		return getDistance(a) > getDistance(b)
-	end)
+	if i > #list then return 1 end -- hết một vòng, quay lại đầu
+	return i
 end
 
--- ===== TẮT HIỆU ỨNG (bloom, sương, particle, bóng...) =====
-local function disableEffect(obj)
-	if effectStates[obj] then return end
-	if obj:IsA("Atmosphere") then
-		effectStates[obj] = { Density = obj.Density }
-		obj.Density = 0
-	elseif POST_EFFECT_CLASSES[obj.ClassName] or PARTICLE_CLASSES[obj.ClassName] then
-		effectStates[obj] = { Enabled = obj.Enabled }
-		obj.Enabled = false
-	end
-end
-
-local function restoreEffects()
-	for obj, state in pairs(effectStates) do
-		if obj and obj.Parent then
-			if state.Density then
-				obj.Density = state.Density
-			else
-				obj.Enabled = state.Enabled
-			end
+-- Quét cây Workspace/Lighting dần dần, không GetDescendants một lần
+local function traverse(t0)
+	while #stack > 0 and os.clock() - t0 < BUDGET do
+		local obj = stack[#stack]
+		stack[#stack] = nil
+		classify(obj)
+		for _, child in ipairs(obj:GetChildren()) do
+			stack[#stack + 1] = child
 		end
 	end
-	effectStates = {}
 end
 
--- Quét hiệu ứng theo đợt, nghỉ mỗi EffectBatch vật thể để không giật
-local function sweepEffects(container)
-	task.spawn(function()
-		local count = 0
-		for _, obj in ipairs(container:GetDescendants()) do
-			if not antiLagEnabled then return end
-			disableEffect(obj)
-			count += 1
-			if count % CONFIG.EffectBatch == 0 then task.wait() end
-		end
-	end)
-end
-
--- ===== VÒNG LẶP DỌN DẸP THEO ĐỢT =====
+-- ===== VÒNG LẶP CHÍNH =====
 RunService.Heartbeat:Connect(function()
-	if not antiLagEnabled then return end
-	if queueIndex > #processQueue then return end
-
-	local startTime = os.clock()
-	local processed = 0
-
-	while queueIndex <= #processQueue and processed < CONFIG.BatchSize do
-		if (os.clock() - startTime) * 1000 > CONFIG.MaxFrameTime then break end
-		applyLag(processQueue[queueIndex])
-		queueIndex += 1
-		processed += 1
+	local t0 = os.clock()
+	if enabled then
+		if Lighting.GlobalShadows then
+			Lighting.GlobalShadows = false
+		end
+		if #stack > 0 then
+			traverse(t0)
+		end
 	end
+	partCursor = processList(parts, stepPart, partCursor, t0)
+	effectCursor = processList(effects, stepEffect, effectCursor, t0)
 end)
 
--- ===== BẬT / TẮT ANTI LAG =====
-local function applyEffects(on)
-	if on then
-		Lighting.GlobalShadows = false
-		Lighting.FogEnd = 1e9
-		sweepEffects(Lighting)
-		sweepEffects(Workspace)
-	else
-		Lighting.GlobalShadows = originalGlobalShadows
-		Lighting.FogEnd = originalFogEnd
-		restoreEffects()
-	end
-end
+-- Vật thể mới xuất hiện khi đang bật sẽ được xử lý ngay
+Workspace.DescendantAdded:Connect(function(obj)
+	if enabled then classify(obj) end
+end)
+Lighting.DescendantAdded:Connect(function(obj)
+	if enabled then classify(obj) end
+end)
 
 -- ===== FPS COUNTER =====
-local fpsCount = 0
-local fpsTimer = 0
-local currentFPS = 0
+local fpsCount, fpsTimer, currentFPS = 0, 0, 0
 
 RunService.RenderStepped:Connect(function(dt)
 	fpsCount += 1
@@ -234,41 +236,36 @@ toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = frame
 Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
 
+-- ===== BẬT / TẮT =====
 local function setEnabled(state)
-	antiLagEnabled = state
+	enabled = state
 	if state then
-		buildQueue()
-		applyEffects(true)
+		Lighting.GlobalShadows = false
+		Lighting.FogEnd = 1e9
+		stack = { Workspace, Lighting }
 		toggleBtn.Text = "Tắt Anti Lag"
 		toggleBtn.BackgroundColor3 = Color3.fromRGB(70, 110, 230)
 	else
-		restoreParts()
-		applyEffects(false)
+		stack = {}
+		Lighting.GlobalShadows = originalGlobalShadows
+		Lighting.FogEnd = originalFogEnd
 		toggleBtn.Text = "Bật Anti Lag"
 		toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
 	end
 end
 
 toggleBtn.MouseButton1Click:Connect(function()
-	setEnabled(not antiLagEnabled)
+	setEnabled(not enabled)
 end)
 
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
 	if input.KeyCode == CONFIG.ToggleKey then
-		setEnabled(not antiLagEnabled)
+		setEnabled(not enabled)
 	end
 end)
 
--- Hiệu ứng mới xuất hiện khi đang bật Anti Lag cũng sẽ bị tắt
-Workspace.DescendantAdded:Connect(function(obj)
-	if antiLagEnabled then task.defer(disableEffect, obj) end
-end)
-Lighting.ChildAdded:Connect(function(obj)
-	if antiLagEnabled then task.defer(disableEffect, obj) end
-end)
-
--- Cập nhật FPS lên menu
+-- Cập nhật số FPS lên menu
 task.spawn(function()
 	while true do
 		fpsLabel.Text = "FPS: " .. currentFPS
