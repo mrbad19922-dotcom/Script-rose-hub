@@ -1,39 +1,113 @@
--- Script cho Delta (executor). Dán vào và execute khi đã vào game.
+-- Survive Hub BETA | ROSEHUB | Bản tích hợp đã tối ưu
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
 local player = Players.LocalPlayer
 
--- ===== GIỚI HẠN =====
+-- ===== GIỚI HẠN & HẰNG SỐ =====
 local MAX_WALK, MAX_JUMP = 40, 100
+local WATER_DEPTH = 6
+local FILE = "SurviveHub_settings.json"
+local THROTTLE = 0.2
 
--- ===== TRẠNG THÁI =====
-local S = {
-	fastRun = false, walk = 30,
-	highJump = false, jump = 50,
-	waterWalk = false,
-	infJump = false,
-	noclip = false,
+-- ===== CÀI ĐẶT MẶC ĐỊNH =====
+local DEFAULT = {
+	scale = 1, r = 10, g = 132, b = 255, rainbow = false,
+	walk = 30, jump = 50,
+	fastRun = false, highJump = false, waterWalk = false, infJump = false, noclip = false,
+	antiBlackHole = false, antiFallStun = false, antiFling = false, antiRagdoll = false, antiLag = false,
 }
 
-local WATER_DEPTH = 6
+local S = {}
+for k, v in pairs(DEFAULT) do S[k] = v end
+
+-- ===== TẢI CÀI ĐẶT ĐÃ LƯU =====
+if isfile and readfile then
+	local okE, exists = pcall(isfile, FILE)
+	if okE and exists then
+		local okR, raw = pcall(readfile, FILE)
+		if okR then
+			local okD, dec = pcall(HttpService.JSONDecode, HttpService, raw)
+			if okD and type(dec) == "table" then
+				for k in pairs(DEFAULT) do
+					if dec[k] ~= nil then S[k] = dec[k] end
+				end
+			end
+		end
+	end
+end
+S.walk = math.clamp(S.walk, 0, MAX_WALK)
+S.jump = math.clamp(S.jump, 0, MAX_JUMP)
+
+-- ===== HÀM ĐỔI VA CHẠM CÓ KHÔI PHỤC =====
+local function makeCollideSet()
+	local orig = setmetatable({}, { __mode = "k" })
+	local o = {}
+	function o.set(part, value)
+		if orig[part] == nil then orig[part] = part.CanCollide end
+		part.CanCollide = value
+	end
+	function o.restore()
+		for part, was in pairs(orig) do
+			if typeof(part) == "Instance" and part.Parent then
+				pcall(function() part.CanCollide = was end)
+			end
+		end
+		table.clear(orig)
+	end
+	return o
+end
+
+local noclipSet = makeCollideSet()
+local flingSet = makeCollideSet()
+
+-- ===== KHAI BÁO TRƯỚC =====
+local toggleAntiLag
+local applyFallStun
 
 -- ===== NHÂN VẬT =====
 local char, hum, root
 local origWalk, origJump
+local wasFast, wasHigh = false, false
+local waterY, lastWaterCheck = nil, 0
+local charConns = {}
+
+applyFallStun = function(on)
+	if not hum then return end
+	for _, st in ipairs({ Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Ragdoll }) do
+		pcall(function() hum:SetStateEnabled(st, not on) end)
+	end
+end
 
 local function bindCharacter(c)
+	for _, cn in ipairs(charConns) do cn:Disconnect() end
+	table.clear(charConns)
+
 	char = c
 	hum = c:WaitForChild("Humanoid")
 	root = c:WaitForChild("HumanoidRootPart")
 	origWalk = hum.WalkSpeed
 	origJump = hum.JumpHeight
+	wasFast, wasHigh = false, false
+	waterY = nil
+
+	table.insert(charConns, hum.StateChanged:Connect(function(_, newState)
+		if S.antiRagdoll and (newState == Enum.HumanoidStateType.Ragdoll
+			or newState == Enum.HumanoidStateType.FallingDown
+			or newState == Enum.HumanoidStateType.Physics) then
+			hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
+	end))
+
+	applyFallStun(S.antiFallStun)
 end
 
 bindCharacter(player.Character or player.CharacterAdded:Wait())
 player.CharacterAdded:Connect(bindCharacter)
 
--- ===== ĐI TRÊN NƯỚC =====
+-- ===== ĐI TRÊN NƯỚC (quét voxel mỗi 0.1 giây, không mỗi frame) =====
 local function getWaterSurfaceY()
 	local origin = root.Position
 	local region = Region3.new(
@@ -57,7 +131,12 @@ end
 
 local function updateWater(dt)
 	if not S.waterWalk then return end
-	local waterY = getWaterSurfaceY()
+
+	local now = os.clock()
+	if now - lastWaterCheck > 0.1 then
+		lastWaterCheck = now
+		waterY = getWaterSurfaceY()
+	end
 	if not waterY then return end
 
 	local vel = root.AssemblyLinearVelocity
@@ -77,30 +156,166 @@ UIS.JumpRequest:Connect(function()
 	end
 end)
 
--- ===== NOCLIP (chạy trước physics) =====
+-- ===== NOCLIP (chỉ quét nhân vật của mình) =====
 RunService.Stepped:Connect(function()
 	if not S.noclip or not char then return end
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") and part.CanCollide then
-			part.CanCollide = false
+			noclipSet.set(part, false)
 		end
 	end
 end)
 
--- ===== VÒNG LẶP CHÍNH (dùng dt) =====
-RunService.Heartbeat:Connect(function(dt)
-	if not hum or not hum.Parent or hum.Health <= 0 then return end
-	hum.UseJumpPower = false
-	hum.WalkSpeed = S.fastRun and math.min(S.walk, MAX_WALK) or origWalk
-	hum.JumpHeight = S.highJump and math.min(S.jump, MAX_JUMP) or origJump
-	updateWater(dt)
+-- ===== VÒNG LẶP NẶNG: chạy mỗi 0.2 giây =====
+task.spawn(function()
+	while true do
+		task.wait(THROTTLE)
+
+		-- Anti Fling: tắt va chạm với người chơi khác
+		if S.antiFling then
+			for _, other in ipairs(Players:GetPlayers()) do
+				if other ~= player and other.Character then
+					for _, part in ipairs(other.Character:GetDescendants()) do
+						if part:IsA("BasePart") and part.CanCollide then
+							flingSet.set(part, false)
+						end
+					end
+				end
+			end
+		end
+
+		-- Anti Black Hole: gỡ lực hút gắn lên nhân vật mình
+		if S.antiBlackHole and char then
+			for _, obj in ipairs(char:GetDescendants()) do
+				if obj:IsA("BodyMover") then
+					obj:Destroy()
+				elseif obj:IsA("VectorForce") or obj:IsA("LineForce") then
+					obj.Enabled = false
+				end
+			end
+		end
+	end
 end)
 
--- ===== HELPER GUI =====
-local ACCENT = Color3.fromRGB(0, 122, 255)
-local OFF = Color3.fromRGB(70, 70, 80)
+-- ===== ANTI LAG (xử lý dần, có khôi phục) =====
+local EFFECT_CLASSES = {
+	ParticleEmitter = true, Trail = true, Smoke = true,
+	Fire = true, Sparkles = true, Beam = true,
+}
+
+local antiLagConn
+local lagOrig = setmetatable({}, { __mode = "k" })
+local lagQueue = {}
+local draining = false
+local prevQuality, prevShadows
+
+local function inCharacter(obj)
+	local cur = obj
+	while cur and cur ~= workspace do
+		if cur:IsA("Model") and Players:GetPlayerFromCharacter(cur) then
+			return true
+		end
+		cur = cur.Parent
+	end
+	return false
+end
+
+local function stripOne(obj)
+	if not obj.Parent then return end
+	if not EFFECT_CLASSES[obj.ClassName] then return end
+	if inCharacter(obj) then return end
+	if lagOrig[obj] == nil then lagOrig[obj] = obj.Enabled end
+	obj.Enabled = false
+end
+
+local function drain()
+	if draining then return end
+	draining = true
+	task.spawn(function()
+		local n = 0
+		while #lagQueue > 0 and S.antiLag do
+			local obj = table.remove(lagQueue)
+			pcall(stripOne, obj)
+			n += 1
+			if n % 200 == 0 then task.wait() end
+		end
+		draining = false
+	end)
+end
+
+toggleAntiLag = function()
+	if S.antiLag then
+		pcall(function()
+			prevQuality = settings().Rendering.QualityLevel
+			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+		end)
+		prevShadows = Lighting.GlobalShadows
+		Lighting.GlobalShadows = false
+
+		for _, v in ipairs(Lighting:GetChildren()) do
+			if v:IsA("PostEffect") then
+				if lagOrig[v] == nil then lagOrig[v] = v.Enabled end
+				v.Enabled = false
+			end
+		end
+
+		if not antiLagConn then
+			antiLagConn = workspace.DescendantAdded:Connect(function(obj)
+				if S.antiLag then
+					lagQueue[#lagQueue + 1] = obj
+					drain()
+				end
+			end)
+		end
+
+		for _, d in ipairs(workspace:GetDescendants()) do
+			lagQueue[#lagQueue + 1] = d
+		end
+		drain()
+	else
+		if antiLagConn then
+			antiLagConn:Disconnect()
+			antiLagConn = nil
+		end
+		table.clear(lagQueue)
+
+		if prevShadows ~= nil then Lighting.GlobalShadows = prevShadows end
+		if prevQuality then
+			pcall(function() settings().Rendering.QualityLevel = prevQuality end)
+		end
+		for obj, was in pairs(lagOrig) do
+			if typeof(obj) == "Instance" and obj.Parent then
+				pcall(function() obj.Enabled = was end)
+			end
+		end
+		table.clear(lagOrig)
+	end
+end
+
+-- ===== MÀU & HÀM DÙNG CHUNG =====
+local OFF = Color3.fromRGB(60, 60, 66)
 local WHITE = Color3.new(1, 1, 1)
-local GREY = Color3.fromRGB(160, 160, 170)
+local GREY = Color3.fromRGB(150, 150, 158)
+local CARD = Color3.fromRGB(26, 26, 30)
+local SIDE = Color3.fromRGB(19, 19, 22)
+local MAIN = Color3.fromRGB(15, 15, 18)
+
+local function accentNow()
+	if S.rainbow then
+		return Color3.fromHSV((tick() * 0.2) % 1, 0.8, 1)
+	end
+	return Color3.fromRGB(S.r, S.g, S.b)
+end
+
+local accentFns, refreshers = {}, {}
+
+local function paintAccent(c)
+	for _, fn in ipairs(accentFns) do fn(c) end
+end
+
+local function refreshAll()
+	for _, fn in ipairs(refreshers) do fn() end
+end
 
 local function new(class, props, parent)
 	local o = Instance.new(class)
@@ -114,10 +329,9 @@ local function corner(parent, r)
 end
 
 local function stroke(parent, color)
-	new("UIStroke", { Color = color, Thickness = 1, Transparency = 0.3 }, parent)
+	return new("UIStroke", { Color = color, Thickness = 1, Transparency = 0.4 }, parent)
 end
 
--- Kéo thả. onTap chạy khi bấm mà không kéo.
 local function makeDrag(handle, target, onTap)
 	local dragging, moved = false, false
 	local startInput, startPos
@@ -147,82 +361,222 @@ local function makeDrag(handle, target, onTap)
 	end)
 end
 
--- ===== GUI =====
+-- ===== GUI CHÍNH =====
 local gui = new("ScreenGui", {
-	Name = "SurviveMenu",
+	Name = "SurviveHub",
 	ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, player:WaitForChild("PlayerGui"))
 
 local window = new("Frame", {
-	Size = UDim2.fromOffset(300, 370),
-	Position = UDim2.new(0.5, -150, 0.5, -185),
-	BackgroundColor3 = Color3.fromRGB(28, 28, 32),
+	Size = UDim2.fromOffset(640, 420),
+	Position = UDim2.new(0.5, -320, 0.5, -210),
+	BackgroundColor3 = MAIN,
 	BorderSizePixel = 0,
 	Active = true,
-	Visible = true,
 	ClipsDescendants = true,
 }, gui)
-corner(window, 12)
-stroke(window, Color3.fromRGB(65, 65, 75))
+corner(window, 14)
+local windowStroke = stroke(window, Color3.fromRGB(50, 50, 56))
+local scaleObj = new("UIScale", { Scale = S.scale }, window)
+table.insert(accentFns, function(c) windowStroke.Color = c end)
 
-local titleBar = new("Frame", {
-	Size = UDim2.new(1, 0, 0, 40),
-	BackgroundColor3 = Color3.fromRGB(38, 38, 44),
+-- Sidebar
+local sidebar = new("Frame", {
+	Size = UDim2.new(0, 180, 1, 0),
+	BackgroundColor3 = SIDE,
 	BorderSizePixel = 0,
-	Active = true,
 }, window)
 
-new("TextLabel", {
-	Size = UDim2.new(1, -90, 1, 0),
-	Position = UDim2.fromOffset(12, 0),
+local sideHeader = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 62),
 	BackgroundTransparency = 1,
-	Text = "Survive Your Ideas",
+	Active = true,
+}, sidebar)
+
+new("TextLabel", {
+	Position = UDim2.fromOffset(16, 14),
+	Size = UDim2.new(1, -32, 0, 22),
+	BackgroundTransparency = 1,
+	Text = "Survive Hub",
 	TextColor3 = WHITE,
 	Font = Enum.Font.GothamBold,
-	TextSize = 14,
+	TextSize = 16,
 	TextXAlignment = Enum.TextXAlignment.Left,
-}, titleBar)
+}, sideHeader)
 
 new("TextLabel", {
-	Size = UDim2.new(0, 70, 1, 0),
-	Position = UDim2.new(1, -78, 0, 0),
+	Position = UDim2.fromOffset(16, 36),
+	Size = UDim2.new(1, -32, 0, 16),
 	BackgroundTransparency = 1,
-	Text = "M: ẩn/hiện",
+	Text = "Build - Delta | Universal",
 	TextColor3 = GREY,
 	Font = Enum.Font.Gotham,
-	TextSize = 11,
-	TextXAlignment = Enum.TextXAlignment.Right,
-}, titleBar)
+	TextSize = 10,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, sideHeader)
 
-makeDrag(titleBar, window)
+makeDrag(sideHeader, window)
 
+local navList = new("Frame", {
+	Position = UDim2.fromOffset(10, 76),
+	Size = UDim2.new(1, -20, 0, 230),
+	BackgroundTransparency = 1,
+}, sidebar)
+
+new("UIListLayout", {
+	Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, navList)
+
+-- Thông tin người chơi
+local profile = new("Frame", {
+	Position = UDim2.new(0, 10, 1, -62),
+	Size = UDim2.new(1, -20, 0, 50),
+	BackgroundColor3 = CARD,
+	BorderSizePixel = 0,
+}, sidebar)
+corner(profile, 25)
+
+local avatar = new("ImageLabel", {
+	Position = UDim2.fromOffset(8, 7),
+	Size = UDim2.fromOffset(36, 36),
+	BackgroundColor3 = OFF,
+	Image = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100),
+}, profile)
+corner(avatar, 18)
+
+new("TextLabel", {
+	Position = UDim2.fromOffset(52, 9),
+	Size = UDim2.new(1, -58, 0, 16),
+	BackgroundTransparency = 1,
+	Text = player.DisplayName,
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 12,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, profile)
+
+new("TextLabel", {
+	Position = UDim2.fromOffset(52, 25),
+	Size = UDim2.new(1, -58, 0, 14),
+	BackgroundTransparency = 1,
+	Text = "@" .. player.Name,
+	TextColor3 = GREY,
+	Font = Enum.Font.Gotham,
+	TextSize = 10,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+}, profile)
+
+-- Vùng nội dung
 local content = new("Frame", {
-	Position = UDim2.fromOffset(10, 50),
-	Size = UDim2.new(1, -20, 1, -60),
+	Position = UDim2.new(0, 180, 0, 0),
+	Size = UDim2.new(1, -180, 1, 0),
 	BackgroundTransparency = 1,
 }, window)
 
-new("UIListLayout", {
-	Padding = UDim.new(0, 8),
-	SortOrder = Enum.SortOrder.LayoutOrder,
+local contentHeader = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 46),
+	BackgroundTransparency = 1,
+	Active = true,
 }, content)
 
-local function card(order, height)
+local headerLabel = new("TextLabel", {
+	Position = UDim2.fromOffset(16, 0),
+	Size = UDim2.new(1, -60, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "Movement",
+	TextColor3 = GREY,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, contentHeader)
+
+new("Frame", {
+	Position = UDim2.new(0, 0, 1, -1),
+	Size = UDim2.new(1, 0, 0, 1),
+	BackgroundColor3 = Color3.fromRGB(40, 40, 46),
+	BorderSizePixel = 0,
+}, contentHeader)
+
+makeDrag(contentHeader, window)
+
+local pages, navs = {}, {}
+
+local function makePage(name)
+	local p = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(16, 56),
+		Size = UDim2.new(1, -32, 1, -68),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		Visible = false,
+	}, content)
+	new("UIListLayout", {
+		Padding = UDim.new(0, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, p)
+	pages[name] = p
+	return p
+end
+
+local function selectTab(name)
+	for n, p in pairs(pages) do p.Visible = (n == name) end
+	for n, b in pairs(navs) do
+		local on = (n == name)
+		b.BackgroundTransparency = on and 0 or 1
+		b.TextColor3 = on and WHITE or GREY
+	end
+	headerLabel.Text = name
+end
+
+local function navButton(order, name)
+	local b = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, 36),
+		BackgroundColor3 = Color3.fromRGB(34, 34, 40),
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = GREY,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		AutoButtonColor = false,
+		LayoutOrder = order,
+	}, navList)
+	corner(b, 8)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 12) }, b)
+	b.Activated:Connect(function() selectTab(name) end)
+	navs[name] = b
+end
+
+local movePage = makePage("Movement")
+local protectPage = makePage("Protection")
+local worldPage = makePage("World")
+local settingsPage = makePage("Settings")
+
+navButton(1, "Movement")
+navButton(2, "Protection")
+navButton(3, "World")
+navButton(4, "Settings")
+
+local function card(parent, order, height)
 	local f = new("Frame", {
 		Size = UDim2.new(1, 0, 0, height),
-		BackgroundColor3 = Color3.fromRGB(40, 40, 46),
+		BackgroundColor3 = CARD,
 		BorderSizePixel = 0,
 		LayoutOrder = order,
-	}, content)
-	corner(f, 8)
+	}, parent)
+	corner(f, 10)
 	return f
 end
 
--- Công tắc kiểu iOS/macOS
-local function switch(parent, y, initial, onChange)
+local function switch(parent, y, key, onChange)
 	local track = new("TextButton", {
-		Position = UDim2.new(1, -52, 0, y),
+		Position = UDim2.new(1, -54, 0, y),
 		Size = UDim2.fromOffset(42, 22),
 		BackgroundColor3 = OFF,
 		Text = "",
@@ -238,25 +592,29 @@ local function switch(parent, y, initial, onChange)
 	}, track)
 	corner(knob, 9)
 
-	local on = initial
-	local function render()
-		track.BackgroundColor3 = on and ACCENT or OFF
-		knob.Position = on and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2)
+	local function show()
+		track.BackgroundColor3 = S[key] and accentNow() or OFF
+		knob.Position = S[key] and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2)
 	end
+
 	track.Activated:Connect(function()
-		on = not on
-		render()
-		onChange(on)
+		S[key] = not S[key]
+		show()
+		if onChange then onChange() end
 	end)
-	render()
-	onChange(on)
+
+	table.insert(refreshers, show)
+	table.insert(accentFns, function(c)
+		if S[key] then track.BackgroundColor3 = c end
+	end)
+	show()
 end
 
-local function toggleCard(order, label, onToggle)
-	local f = card(order, 40)
+local function toggleCard(page, order, label, key, onChange)
+	local f = card(page, order, 44)
 	new("TextLabel", {
-		Position = UDim2.fromOffset(12, 0),
-		Size = UDim2.new(1, -70, 1, 0),
+		Position = UDim2.fromOffset(14, 0),
+		Size = UDim2.new(1, -80, 1, 0),
 		BackgroundTransparency = 1,
 		Text = label,
 		TextColor3 = WHITE,
@@ -264,43 +622,36 @@ local function toggleCard(order, label, onToggle)
 		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
 	}, f)
-	switch(f, 9, false, onToggle)
+	switch(f, 11, key, onChange)
 end
 
-local function sliderCard(order, label, min, max, default, onToggle, onSlide)
-	local f = card(order, 66)
+local function sliderCard(page, order, label, min, max, toggleKey, valueKey)
+	local f = card(page, order, 74)
 
-	local nameLbl = new("TextLabel", {
-		Position = UDim2.fromOffset(12, 8),
-		Size = UDim2.new(1, -70, 0, 22),
+	new("TextLabel", {
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -80, 0, 20),
 		BackgroundTransparency = 1,
 		TextColor3 = WHITE,
 		Font = Enum.Font.GothamMedium,
 		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = label,
 	}, f)
 
-	switch(f, 8, false, onToggle)
-
-	local hit = new("Frame", {
-		Position = UDim2.fromOffset(12, 40),
-		Size = UDim2.new(1, -24, 0, 18),
-		BackgroundTransparency = 1,
-		Active = true,
-	}, f)
+	switch(f, 10, toggleKey)
 
 	local track = new("Frame", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 0, 0.5, 0),
-		Size = UDim2.new(1, 0, 0, 6),
+		Position = UDim2.fromOffset(14, 50),
+		Size = UDim2.new(1, -100, 0, 6),
 		BackgroundColor3 = OFF,
 		BorderSizePixel = 0,
-	}, hit)
+	}, f)
 	corner(track, 3)
 
 	local fill = new("Frame", {
 		Size = UDim2.new(0, 0, 1, 0),
-		BackgroundColor3 = ACCENT,
+		BackgroundColor3 = accentNow(),
 		BorderSizePixel = 0,
 	}, track)
 	corner(fill, 3)
@@ -314,15 +665,35 @@ local function sliderCard(order, label, min, max, default, onToggle, onSlide)
 	}, track)
 	corner(knob, 7)
 
-	local dragging = false
+	local valueBox = new("TextLabel", {
+		Position = UDim2.new(1, -72, 0, 40),
+		Size = UDim2.fromOffset(58, 24),
+		BackgroundColor3 = Color3.fromRGB(38, 38, 44),
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		Text = "",
+	}, f)
+	corner(valueBox, 6)
 
-	local function setValue(v)
-		v = math.clamp(math.floor(v + 0.5), min, max)
+	local hit = new("Frame", {
+		Position = UDim2.fromOffset(14, 40),
+		Size = UDim2.new(1, -100, 0, 26),
+		BackgroundTransparency = 1,
+		Active = true,
+	}, f)
+
+	local function paint(v)
 		local pct = (v - min) / (max - min)
 		fill.Size = UDim2.new(pct, 0, 1, 0)
 		knob.Position = UDim2.new(pct, 0, 0.5, 0)
-		nameLbl.Text = string.format("%s: %d", label, v)
-		onSlide(v)
+		valueBox.Text = tostring(v)
+	end
+
+	local function setValue(v)
+		v = math.clamp(math.floor(v + 0.5), min, max)
+		S[valueKey] = v
+		paint(v)
 	end
 
 	local function fromX(x)
@@ -330,6 +701,7 @@ local function sliderCard(order, label, min, max, default, onToggle, onSlide)
 		setValue(min + pct * (max - min))
 	end
 
+	local dragging = false
 	hit.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
@@ -349,34 +721,244 @@ local function sliderCard(order, label, min, max, default, onToggle, onSlide)
 		end
 	end)
 
-	setValue(default)
+	table.insert(refreshers, function() paint(S[valueKey]) end)
+	table.insert(accentFns, function(c) fill.BackgroundColor3 = c end)
+	paint(S[valueKey])
 end
 
--- Các chức năng
-sliderCard(1, "Chạy nhanh", 0, MAX_WALK, S.walk,
-	function(on) S.fastRun = on end,
-	function(v) S.walk = v end)
+-- ===== TRANG MOVEMENT =====
+sliderCard(movePage, 1, "Chạy nhanh", 0, MAX_WALK, "fastRun", "walk")
+sliderCard(movePage, 2, "Nhảy cao", 0, MAX_JUMP, "highJump", "jump")
+toggleCard(movePage, 3, "Nhảy vô hạn", "infJump")
 
-sliderCard(2, "Nhảy cao", 0, MAX_JUMP, S.jump,
-	function(on) S.highJump = on end,
-	function(v) S.jump = v end)
+-- ===== TRANG PROTECTION =====
+toggleCard(protectPage, 1, "Anti Black Hole (chống hút)", "antiBlackHole")
+toggleCard(protectPage, 2, "Anti Fall Stun (không choáng khi rơi)", "antiFallStun", function()
+	applyFallStun(S.antiFallStun)
+end)
+toggleCard(protectPage, 3, "Anti Fling (chống đẩy văng)", "antiFling", function()
+	if not S.antiFling then flingSet.restore() end
+end)
+toggleCard(protectPage, 4, "Anti Ragdoll (chống ngã/bất động)", "antiRagdoll")
 
-toggleCard(3, "Đi trên nước", function(on) S.waterWalk = on end)
-toggleCard(4, "Nhảy vô hạn", function(on) S.infJump = on end)
-toggleCard(5, "Noclip (xuyên tường)", function(on) S.noclip = on end)
+-- ===== TRANG WORLD =====
+toggleCard(worldPage, 1, "Đi trên nước", "waterWalk")
+toggleCard(worldPage, 2, "Noclip (xuyên tường)", "noclip", function()
+	if not S.noclip then noclipSet.restore() end
+end)
+toggleCard(worldPage, 3, "Anti Lag (xóa hiệu ứng)", "antiLag", function()
+	toggleAntiLag()
+end)
+
+-- ===== TRANG SETTINGS =====
+local function paintTheme()
+	paintAccent(accentNow())
+	refreshAll()
+end
+
+local scaleCard = card(settingsPage, 1, 84)
+new("TextLabel", {
+	Position = UDim2.fromOffset(14, 10),
+	Size = UDim2.new(1, -28, 0, 20),
+	BackgroundTransparency = 1,
+	Text = "Độ to menu",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, scaleCard)
+
+local scaleBtns = {}
+for idx, val in ipairs({ 1, 0.75, 0.5 }) do
+	local b = new("TextButton", {
+		Position = UDim2.fromOffset(14 + (idx - 1) * 86, 40),
+		Size = UDim2.fromOffset(78, 28),
+		BackgroundColor3 = OFF,
+		Text = (val * 100) .. "%",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		AutoButtonColor = false,
+	}, scaleCard)
+	corner(b, 6)
+	b.Activated:Connect(function()
+		S.scale = val
+		refreshAll()
+	end)
+	table.insert(scaleBtns, { btn = b, val = val })
+end
+
+table.insert(refreshers, function()
+	scaleObj.Scale = S.scale
+	for _, item in ipairs(scaleBtns) do
+		item.btn.BackgroundColor3 = (S.scale == item.val) and accentNow() or OFF
+	end
+end)
+table.insert(accentFns, function(c)
+	for _, item in ipairs(scaleBtns) do
+		if S.scale == item.val then item.btn.BackgroundColor3 = c end
+	end
+end)
+
+local colorCard = card(settingsPage, 2, 110)
+new("TextLabel", {
+	Position = UDim2.fromOffset(14, 10),
+	Size = UDim2.new(1, -28, 0, 20),
+	BackgroundTransparency = 1,
+	Text = "Màu menu",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, colorCard)
+
+local palette = {
+	Color3.fromRGB(10, 132, 255),
+	Color3.fromRGB(160, 90, 255),
+	Color3.fromRGB(40, 200, 110),
+	Color3.fromRGB(255, 69, 58),
+	Color3.fromRGB(255, 159, 10),
+	Color3.fromRGB(255, 55, 140),
+}
+
+for idx, col in ipairs(palette) do
+	local sw = new("TextButton", {
+		Position = UDim2.fromOffset(14 + (idx - 1) * 38, 38),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundColor3 = col,
+		Text = "",
+		AutoButtonColor = false,
+	}, colorCard)
+	corner(sw, 15)
+	sw.Activated:Connect(function()
+		S.r = math.floor(col.R * 255 + 0.5)
+		S.g = math.floor(col.G * 255 + 0.5)
+		S.b = math.floor(col.B * 255 + 0.5)
+		S.rainbow = false
+		paintTheme()
+	end)
+end
+
+new("TextLabel", {
+	Position = UDim2.fromOffset(14, 74),
+	Size = UDim2.new(1, -90, 0, 20),
+	BackgroundTransparency = 1,
+	Text = "Rainbow (đổi màu liên tục)",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 12,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, colorCard)
+
+switch(colorCard, 74, "rainbow", paintTheme)
+
+local dataCard = card(settingsPage, 3, 110)
+new("TextLabel", {
+	Position = UDim2.fromOffset(14, 10),
+	Size = UDim2.new(1, -28, 0, 20),
+	BackgroundTransparency = 1,
+	Text = "Dữ liệu",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, dataCard)
+
+local statusLbl = new("TextLabel", {
+	Position = UDim2.fromOffset(14, 80),
+	Size = UDim2.new(1, -28, 0, 18),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = GREY,
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, dataCard)
+
+local saveBtn = new("TextButton", {
+	Position = UDim2.fromOffset(14, 40),
+	Size = UDim2.fromOffset(150, 30),
+	BackgroundColor3 = Color3.fromRGB(40, 40, 46),
+	Text = "Lưu cài đặt",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 12,
+	AutoButtonColor = false,
+}, dataCard)
+corner(saveBtn, 6)
+
+local delBtn = new("TextButton", {
+	Position = UDim2.fromOffset(176, 40),
+	Size = UDim2.fromOffset(150, 30),
+	BackgroundColor3 = Color3.fromRGB(120, 36, 36),
+	Text = "Xóa cài đặt",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 12,
+	AutoButtonColor = false,
+}, dataCard)
+corner(delBtn, 6)
+
+saveBtn.Activated:Connect(function()
+	local ok = false
+	if writefile then
+		ok = pcall(writefile, FILE, HttpService:JSONEncode(S))
+	end
+	statusLbl.Text = ok and "Đã lưu cài đặt." or "Executor này không hỗ trợ lưu file."
+end)
+
+delBtn.Activated:Connect(function()
+	local deleted = false
+	if delfile and isfile then
+		local okE, exists = pcall(isfile, FILE)
+		if okE and exists then
+			deleted = pcall(delfile, FILE)
+		end
+	end
+
+	for k, v in pairs(DEFAULT) do S[k] = v end
+	applyFallStun(false)
+	noclipSet.restore()
+	flingSet.restore()
+	toggleAntiLag()
+	paintTheme()
+
+	statusLbl.Text = deleted and "Đã xóa file và đưa về mặc định." or "Chưa có file đã lưu, đã đưa về mặc định."
+end)
+
+local info = card(settingsPage, 4, 70)
+new("TextLabel", {
+	Position = UDim2.fromOffset(14, 10),
+	Size = UDim2.new(1, -28, 1, -20),
+	BackgroundTransparency = 1,
+	Text = "Phím M: ẩn/hiện menu. Nút MENU: kéo để di chuyển, bấm để mở/đóng.",
+	TextColor3 = GREY,
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	TextWrapped = true,
+}, info)
+
+-- ===== KHỞI TẠO =====
+selectTab("Movement")
+refreshAll()
+toggleAntiLag()
+applyFallStun(S.antiFallStun)
 
 -- ===== NÚT MENU TRÒN =====
 local openBtn = new("TextButton", {
-	Size = UDim2.fromOffset(52, 52),
+	Size = UDim2.fromOffset(44, 44),
 	Position = UDim2.fromOffset(16, 120),
-	BackgroundColor3 = ACCENT,
-	Text = "MENU",
+	BackgroundColor3 = accentNow(),
+	Text = "🪷",
 	TextColor3 = WHITE,
 	Font = Enum.Font.GothamBold,
-	TextSize = 12,
+	TextSize = 11,
 	Active = true,
 }, gui)
-corner(openBtn, 26)
+corner(openBtn, 22)
+table.insert(accentFns, function(c) openBtn.BackgroundColor3 = c end)
 
 makeDrag(openBtn, openBtn, function()
 	window.Visible = not window.Visible
@@ -387,5 +969,53 @@ UIS.InputBegan:Connect(function(input, processed)
 	if processed then return end
 	if input.KeyCode == Enum.KeyCode.M then
 		window.Visible = not window.Visible
+	end
+end)
+
+-- ===== VÒNG LẶP CHÍNH (nhẹ, chạy mỗi frame) =====
+RunService.Heartbeat:Connect(function(dt)
+	if S.rainbow then
+		paintAccent(accentNow())
+	end
+	if not char or not hum or not root or not hum.Parent or hum.Health <= 0 then return end
+
+	hum.UseJumpPower = false
+
+	-- Chạy nhanh: chỉ ghi khi cần, và trả lại tốc độ gốc một lần khi tắt
+	if S.fastRun then
+		local target = math.min(S.walk, MAX_WALK)
+		if hum.WalkSpeed ~= target then hum.WalkSpeed = target end
+		wasFast = true
+	elseif wasFast then
+		hum.WalkSpeed = origWalk
+		wasFast = false
+	end
+
+	-- Nhảy cao: tương tự chạy nhanh
+	if S.highJump then
+		local target = math.min(S.jump, MAX_JUMP)
+		if hum.JumpHeight ~= target then hum.JumpHeight = target end
+		wasHigh = true
+	elseif wasHigh then
+		hum.JumpHeight = origJump
+		wasHigh = false
+	end
+
+	updateWater(dt)
+
+	-- Anti Fling: giới hạn vận tốc bất thường
+	if S.antiFling then
+		local vel = root.AssemblyLinearVelocity
+		if vel.Magnitude > 140 then
+			root.AssemblyLinearVelocity = vel.Unit * 50
+		end
+		if root.AssemblyAngularVelocity.Magnitude > 20 then
+			root.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
+	-- Anti Fall Stun / Anti Ragdoll: giữ nhân vật không bị khóa ở PlatformStand
+	if (S.antiFallStun or S.antiRagdoll) and hum.PlatformStand then
+		hum.PlatformStand = false
 	end
 end)
