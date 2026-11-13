@@ -1,0 +1,391 @@
+-- Script cho Delta (executor). Dán vào và execute khi đã vào game.
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+
+-- ===== GIỚI HẠN =====
+local MAX_WALK, MAX_JUMP = 40, 100
+
+-- ===== TRẠNG THÁI =====
+local S = {
+	fastRun = false, walk = 30,
+	highJump = false, jump = 50,
+	waterWalk = false,
+	infJump = false,
+	noclip = false,
+}
+
+local WATER_DEPTH = 6
+
+-- ===== NHÂN VẬT =====
+local char, hum, root
+local origWalk, origJump
+
+local function bindCharacter(c)
+	char = c
+	hum = c:WaitForChild("Humanoid")
+	root = c:WaitForChild("HumanoidRootPart")
+	origWalk = hum.WalkSpeed
+	origJump = hum.JumpHeight
+end
+
+bindCharacter(player.Character or player.CharacterAdded:Wait())
+player.CharacterAdded:Connect(bindCharacter)
+
+-- ===== ĐI TRÊN NƯỚC =====
+local function getWaterSurfaceY()
+	local origin = root.Position
+	local region = Region3.new(
+		origin - Vector3.new(2, WATER_DEPTH, 2),
+		origin + Vector3.new(2, 1, 2)
+	):ExpandToGrid(4)
+
+	local materials, occupancies = workspace.Terrain:ReadVoxels(region, 4)
+	local size = materials.Size
+	for y = size.Y, 1, -1 do
+		for x = 1, size.X do
+			for z = 1, size.Z do
+				if materials[x][y][z] == Enum.Material.Water and occupancies[x][y][z] > 0.5 then
+					return region.CFrame.Position.Y + (y - size.Y / 2) * 4 + 2
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function updateWater(dt)
+	if not S.waterWalk then return end
+	local waterY = getWaterSurfaceY()
+	if not waterY then return end
+
+	local vel = root.AssemblyLinearVelocity
+	if vel.Y <= 0 and root.Position.Y - waterY < hum.HipHeight + 3 then
+		local targetY = waterY + hum.HipHeight + root.Size.Y / 2
+		local newY = root.Position.Y + (targetY - root.Position.Y) * math.min(1, 15 * dt)
+		root.CFrame = CFrame.new(root.Position.X, newY, root.Position.Z) * (root.CFrame - root.CFrame.Position)
+		root.AssemblyLinearVelocity = Vector3.new(vel.X, 0, vel.Z)
+		hum:ChangeState(Enum.HumanoidStateType.Running)
+	end
+end
+
+-- ===== NHẢY VÔ HẠN =====
+UIS.JumpRequest:Connect(function()
+	if S.infJump and hum and hum.Parent and hum.Health > 0 then
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end)
+
+-- ===== NOCLIP (chạy trước physics) =====
+RunService.Stepped:Connect(function()
+	if not S.noclip or not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") and part.CanCollide then
+			part.CanCollide = false
+		end
+	end
+end)
+
+-- ===== VÒNG LẶP CHÍNH (dùng dt) =====
+RunService.Heartbeat:Connect(function(dt)
+	if not hum or not hum.Parent or hum.Health <= 0 then return end
+	hum.UseJumpPower = false
+	hum.WalkSpeed = S.fastRun and math.min(S.walk, MAX_WALK) or origWalk
+	hum.JumpHeight = S.highJump and math.min(S.jump, MAX_JUMP) or origJump
+	updateWater(dt)
+end)
+
+-- ===== HELPER GUI =====
+local ACCENT = Color3.fromRGB(0, 122, 255)
+local OFF = Color3.fromRGB(70, 70, 80)
+local WHITE = Color3.new(1, 1, 1)
+local GREY = Color3.fromRGB(160, 160, 170)
+
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do o[k] = v end
+	if parent then o.Parent = parent end
+	return o
+end
+
+local function corner(parent, r)
+	new("UICorner", { CornerRadius = UDim.new(0, r) }, parent)
+end
+
+local function stroke(parent, color)
+	new("UIStroke", { Color = color, Thickness = 1, Transparency = 0.3 }, parent)
+end
+
+-- Kéo thả. onTap chạy khi bấm mà không kéo.
+local function makeDrag(handle, target, onTap)
+	local dragging, moved = false, false
+	local startInput, startPos
+
+	handle.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, moved = true, false
+			startInput = Vector2.new(i.Position.X, i.Position.Y)
+			startPos = target.Position
+		end
+	end)
+
+	UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local dx = i.Position.X - startInput.X
+			local dy = i.Position.Y - startInput.Y
+			if math.abs(dx) + math.abs(dy) > 5 then moved = true end
+			target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + dx, startPos.Y.Scale, startPos.Y.Offset + dy)
+		end
+	end)
+
+	UIS.InputEnded:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+			if not moved and onTap then onTap() end
+		end
+	end)
+end
+
+-- ===== GUI =====
+local gui = new("ScreenGui", {
+	Name = "SurviveMenu",
+	ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, player:WaitForChild("PlayerGui"))
+
+local window = new("Frame", {
+	Size = UDim2.fromOffset(300, 370),
+	Position = UDim2.new(0.5, -150, 0.5, -185),
+	BackgroundColor3 = Color3.fromRGB(28, 28, 32),
+	BorderSizePixel = 0,
+	Active = true,
+	Visible = true,
+	ClipsDescendants = true,
+}, gui)
+corner(window, 12)
+stroke(window, Color3.fromRGB(65, 65, 75))
+
+local titleBar = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 40),
+	BackgroundColor3 = Color3.fromRGB(38, 38, 44),
+	BorderSizePixel = 0,
+	Active = true,
+}, window)
+
+new("TextLabel", {
+	Size = UDim2.new(1, -90, 1, 0),
+	Position = UDim2.fromOffset(12, 0),
+	BackgroundTransparency = 1,
+	Text = "Survive Your Ideas",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, titleBar)
+
+new("TextLabel", {
+	Size = UDim2.new(0, 70, 1, 0),
+	Position = UDim2.new(1, -78, 0, 0),
+	BackgroundTransparency = 1,
+	Text = "M: ẩn/hiện",
+	TextColor3 = GREY,
+	Font = Enum.Font.Gotham,
+	TextSize = 11,
+	TextXAlignment = Enum.TextXAlignment.Right,
+}, titleBar)
+
+makeDrag(titleBar, window)
+
+local content = new("Frame", {
+	Position = UDim2.fromOffset(10, 50),
+	Size = UDim2.new(1, -20, 1, -60),
+	BackgroundTransparency = 1,
+}, window)
+
+new("UIListLayout", {
+	Padding = UDim.new(0, 8),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, content)
+
+local function card(order, height)
+	local f = new("Frame", {
+		Size = UDim2.new(1, 0, 0, height),
+		BackgroundColor3 = Color3.fromRGB(40, 40, 46),
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+	}, content)
+	corner(f, 8)
+	return f
+end
+
+-- Công tắc kiểu iOS/macOS
+local function switch(parent, y, initial, onChange)
+	local track = new("TextButton", {
+		Position = UDim2.new(1, -52, 0, y),
+		Size = UDim2.fromOffset(42, 22),
+		BackgroundColor3 = OFF,
+		Text = "",
+		AutoButtonColor = false,
+	}, parent)
+	corner(track, 11)
+
+	local knob = new("Frame", {
+		Size = UDim2.fromOffset(18, 18),
+		Position = UDim2.fromOffset(2, 2),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, track)
+	corner(knob, 9)
+
+	local on = initial
+	local function render()
+		track.BackgroundColor3 = on and ACCENT or OFF
+		knob.Position = on and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2)
+	end
+	track.Activated:Connect(function()
+		on = not on
+		render()
+		onChange(on)
+	end)
+	render()
+	onChange(on)
+end
+
+local function toggleCard(order, label, onToggle)
+	local f = card(order, 40)
+	new("TextLabel", {
+		Position = UDim2.fromOffset(12, 0),
+		Size = UDim2.new(1, -70, 1, 0),
+		BackgroundTransparency = 1,
+		Text = label,
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, f)
+	switch(f, 9, false, onToggle)
+end
+
+local function sliderCard(order, label, min, max, default, onToggle, onSlide)
+	local f = card(order, 66)
+
+	local nameLbl = new("TextLabel", {
+		Position = UDim2.fromOffset(12, 8),
+		Size = UDim2.new(1, -70, 0, 22),
+		BackgroundTransparency = 1,
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, f)
+
+	switch(f, 8, false, onToggle)
+
+	local hit = new("Frame", {
+		Position = UDim2.fromOffset(12, 40),
+		Size = UDim2.new(1, -24, 0, 18),
+		BackgroundTransparency = 1,
+		Active = true,
+	}, f)
+
+	local track = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.new(1, 0, 0, 6),
+		BackgroundColor3 = OFF,
+		BorderSizePixel = 0,
+	}, hit)
+	corner(track, 3)
+
+	local fill = new("Frame", {
+		Size = UDim2.new(0, 0, 1, 0),
+		BackgroundColor3 = ACCENT,
+		BorderSizePixel = 0,
+	}, track)
+	corner(fill, 3)
+
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, track)
+	corner(knob, 7)
+
+	local dragging = false
+
+	local function setValue(v)
+		v = math.clamp(math.floor(v + 0.5), min, max)
+		local pct = (v - min) / (max - min)
+		fill.Size = UDim2.new(pct, 0, 1, 0)
+		knob.Position = UDim2.new(pct, 0, 0.5, 0)
+		nameLbl.Text = string.format("%s: %d", label, v)
+		onSlide(v)
+	end
+
+	local function fromX(x)
+		local pct = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+		setValue(min + pct * (max - min))
+	end
+
+	hit.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			fromX(i.Position.X)
+		end
+	end)
+
+	UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			fromX(i.Position.X)
+		end
+	end)
+
+	UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	setValue(default)
+end
+
+-- Các chức năng
+sliderCard(1, "Chạy nhanh", 0, MAX_WALK, S.walk,
+	function(on) S.fastRun = on end,
+	function(v) S.walk = v end)
+
+sliderCard(2, "Nhảy cao", 0, MAX_JUMP, S.jump,
+	function(on) S.highJump = on end,
+	function(v) S.jump = v end)
+
+toggleCard(3, "Đi trên nước", function(on) S.waterWalk = on end)
+toggleCard(4, "Nhảy vô hạn", function(on) S.infJump = on end)
+toggleCard(5, "Noclip (xuyên tường)", function(on) S.noclip = on end)
+
+-- ===== NÚT MENU TRÒN =====
+local openBtn = new("TextButton", {
+	Size = UDim2.fromOffset(52, 52),
+	Position = UDim2.fromOffset(16, 120),
+	BackgroundColor3 = ACCENT,
+	Text = "MENU",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamBold,
+	TextSize = 12,
+	Active = true,
+}, gui)
+corner(openBtn, 26)
+
+makeDrag(openBtn, openBtn, function()
+	window.Visible = not window.Visible
+end)
+
+-- ===== PHÍM M =====
+UIS.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.M then
+		window.Visible = not window.Visible
+	end
+end)
