@@ -1,328 +1,331 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
 
 local localPlayer = Players.LocalPlayer
 
--- File lưu cấu hình
-local configFileName = "RoseHub_ThrowConfig_V5.json"
+-- ==========================================
+-- TỌA ĐỘ CỐ ĐỊNH THEO YÊU CẦU
+-- ==========================================
+local THROW_POS = Vector3.new(0, 6, -45)       -- Vị trí đứng ném
+local SELL_POS = Vector3.new(55, 6, -28)        -- Vị trí bán đồ (Bán tất cả)[span_3](start_span)[span_3](end_span)
 
--- Các biến cài đặt mặc định
+local configFileName = "RoseHub_ThrowConfig_V8.json"
+
 local settings = {
-    autoFarmEnabled = false,
-    antiAfkEnabled = false,
+    autoFarmEnabled = true,
+    antiAfkEnabled = true,
     antiLagEnabled = false,
-    savedPos = nil,
+    teleportMode = false,
+    teleportDelay = 0.3,
     tweenSpeed = 45,
     throwChargeTime = 1.5,
     waitTimeAfterThrow = 2.0,
-    waitTimeAfterRespawn = 1.0
+    waitTimeAfterRespawn = 1.0,
+    -- Cài đặt Auto Sell & Auto Equip Pet mới
+    autoSellEnabled = true,
+    throwsBeforeSell = 5,       -- Ném bao nhiêu lần thì đi bán 1 lần
+    sellWaitTime = 1.5,         -- Thời gian chờ sau khi bấm bán
+    autoEquipPet = true         -- Tự động trang bị pet tốt nhất
 }
 
--- Hàm lưu cấu hình
+-- Đọc/Lưu cấu hình an toàn
 local function saveConfig()
-    local data = {
-        tweenSpeed = settings.tweenSpeed,
-        throwChargeTime = settings.throwChargeTime,
-        waitTimeAfterThrow = settings.waitTimeAfterThrow,
-        waitTimeAfterRespawn = settings.waitTimeAfterRespawn,
-        antiAfkEnabled = settings.antiAfkEnabled,
-        antiLagEnabled = settings.antiLagEnabled
-    }
-    if settings.savedPos then
-        data.savedPos = {settings.savedPos.X, settings.savedPos.Y, settings.savedPos.Z}
-    end
     pcall(function()
-        writefile(configFileName, HttpService:JSONEncode(data))
+        if not writefile then return end
+        writefile(configFileName, HttpService:JSONEncode(settings))
     end)
 end
 
--- Hàm đọc cấu hình
 local function loadConfig()
     pcall(function()
         if readfile and isfile and isfile(configFileName) then
             local data = HttpService:JSONDecode(readfile(configFileName))
             if data then
-                settings.tweenSpeed = data.tweenSpeed or settings.tweenSpeed
-                settings.throwChargeTime = data.throwChargeTime or settings.throwChargeTime
-                settings.waitTimeAfterThrow = data.waitTimeAfterThrow or settings.waitTimeAfterThrow
-                settings.waitTimeAfterRespawn = data.waitTimeAfterRespawn or settings.waitTimeAfterRespawn
-                settings.antiAfkEnabled = data.antiAfkEnabled or settings.antiAfkEnabled
-                settings.antiLagEnabled = data.antiLagEnabled or settings.antiLagEnabled
-                if data.savedPos then
-                    settings.savedPos = CFrame.new(data.savedPos[1], data.savedPos[2], data.savedPos[3])
-                end
+                for k, v in pairs(data) do settings[k] = v end
             end
         end
     end)
 end
-
 loadConfig()
 
--- Xóa menu cũ nếu có
-if CoreGui:FindFirstChild("RoseHubTabMenuV5") then
-    CoreGui:FindFirstChild("RoseHubTabMenuV5"):Destroy()
+-- Chọn nơi chứa UI tương thích mọi Executor
+local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
+if not pcall(function() local _ = guiParent.Name end) then
+    guiParent = localPlayer:WaitForChild("PlayerGui")
 end
 
--- Tạo Giao Diện Menu ROSE HUB (Tab Style)
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoseHubTabMenuV5"
-ScreenGui.Parent = CoreGui
+if guiParent:FindFirstChild("RoseHubV8") then
+    guiParent:FindFirstChild("RoseHubV8"):Destroy()
+end
+
+-- Kéo thả UI mượt mà
+local function makeDraggable(frame)
+    local dragging, dragInput, dragStart, startPos
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- Khởi tạo Giao Diện UI ROSE HUB V8
+local ScreenGui = Instance.new("ScreenGui", guiParent)
+ScreenGui.Name = "RoseHubV8"
 ScreenGui.ResetOnSpawn = false
 
--- Nút mở/đóng menu nổi trên màn hình
-local OpenButton = Instance.new("TextButton")
-OpenButton.Parent = ScreenGui
+local OpenButton = Instance.new("TextButton", ScreenGui)
 OpenButton.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-OpenButton.Position = UDim2.new(0, 20, 0.4, 0)
-OpenButton.Size = UDim2.new(0, 45, 0, 45)
+OpenButton.Position = UDim2.new(0, 15, 0.35, 0)
+OpenButton.Size = UDim2.new(0, 44, 0, 44)
 OpenButton.Font = Enum.Font.GothamBold
-OpenButton.Text = "🌹"
+OpenButton.Text = "🌸"
 OpenButton.TextColor3 = Color3.fromRGB(255, 150, 200)
 OpenButton.TextSize = 20
-OpenButton.Draggable = true
+makeDraggable(OpenButton)
+Instance.new("UICorner", OpenButton).CornerRadius = UDim.new(1, 0)
+Instance.new("UIStroke", OpenButton).Color = Color3.fromRGB(255, 105, 180)
 
-local OpenCorner = Instance.new("UICorner")
-OpenCorner.CornerRadius = UDim.new(1, 0)
-OpenCorner.Parent = OpenButton
-
-local OpenStroke = Instance.new("UIStroke")
-OpenStroke.Color = Color3.fromRGB(255, 105, 180)
-OpenStroke.Thickness = 2
-OpenStroke.Parent = OpenButton
-
--- Khung chính
-local MainFrame = Instance.new("Frame")
-MainFrame.Parent = ScreenGui
+local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
-MainFrame.Position = UDim2.new(0.5, -130, 0.25, 0)
-MainFrame.Size = UDim2.new(0, 260, 0, 340)
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Visible = true
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 12)
-MainCorner.Parent = MainFrame
-
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(255, 105, 180)
-MainStroke.Thickness = 1.5
-MainStroke.Parent = MainFrame
+MainFrame.Position = UDim2.new(0.5, -135, 0.2, 0)
+MainFrame.Size = UDim2.new(0, 270, 0, 360)
+makeDraggable(MainFrame)
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", MainFrame).Color = Color3.fromRGB(255, 105, 180)
 
 OpenButton.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Tiêu đề ROSE HUB
-local TitleBar = Instance.new("Frame")
-TitleBar.Parent = MainFrame
+local TitleBar = Instance.new("Frame", MainFrame)
 TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-TitleBar.Size = UDim2.new(1, 0, 0, 35)
+TitleBar.Size = UDim2.new(1, 0, 0, 34)
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 12)
 
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 12)
-TitleCorner.Parent = TitleBar
-
-local TitleText = Instance.new("TextLabel")
-TitleText.Parent = TitleBar
+local TitleText = Instance.new("TextLabel", TitleBar)
 TitleText.BackgroundTransparency = 1
 TitleText.Size = UDim2.new(1, 0, 1, 0)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.Text = "🌹 ROSE HUB"
+TitleText.Text = "🌸 ROSE HUB V8 (AUTO SELL)"
 TitleText.TextColor3 = Color3.fromRGB(255, 150, 200)
-TitleText.TextSize = 13
+TitleText.TextSize = 12
 
--- Thanh chuyển Tab (Main / Setting)
-local TabBar = Instance.new("Frame")
-TabBar.Parent = MainFrame
+-- Tabs Bar
+local TabBar = Instance.new("Frame", MainFrame)
 TabBar.BackgroundTransparency = 1
-TabBar.Position = UDim2.new(0.05, 0, 0.12, 0)
-TabBar.Size = UDim2.new(0.9, 0, 0, 28)
+TabBar.Position = UDim2.new(0.04, 0, 0.11, 0)
+TabBar.Size = UDim2.new(0.92, 0, 0, 28)
 
-local TabMainBtn = Instance.new("TextButton")
-TabMainBtn.Parent = TabBar
+local function createTabBtn(name, posX, sizeX)
+    local btn = Instance.new("TextButton", TabBar)
+    btn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    btn.Position = UDim2.new(posX, 0, 0, 0)
+    btn.Size = UDim2.new(sizeX, 0, 1, 0)
+    btn.Font = Enum.Font.GothamBold
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    btn.TextSize = 11
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local TabMainBtn = createTabBtn("Main", 0, 0.31)
+local TabCustomBtn = createTabBtn("Customize", 0.34, 0.32)
+local TabSettingBtn = createTabBtn("Settings", 0.69, 0.31)
+
 TabMainBtn.BackgroundColor3 = Color3.fromRGB(230, 80, 150)
-TabMainBtn.Size = UDim2.new(0.48, 0, 1, 0)
-TabMainBtn.Font = Enum.Font.GothamBold
-TabMainBtn.Text = "Main"
 TabMainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-TabMainBtn.TextSize = 12
-local TMCorner = Instance.new("UICorner"); TMCorner.CornerRadius = UDim.new(0, 6); TMCorner.Parent = TabMainBtn
 
-local TabSettingBtn = Instance.new("TextButton")
-TabSettingBtn.Parent = TabBar
-TabSettingBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-TabSettingBtn.Position = UDim2.new(0.52, 0, 0, 0)
-TabSettingBtn.Size = UDim2.new(0.48, 0, 1, 0)
-TabSettingBtn.Font = Enum.Font.GothamBold
-TabSettingBtn.Text = "Settings"
-TabSettingBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
-TabSettingBtn.TextSize = 12
-local TSCorner = Instance.new("UICorner"); TSCorner.CornerRadius = UDim.new(0, 6); TSCorner.Parent = TabSettingBtn
-
--- Container chứa nội dung các Tab
-local Container = Instance.new("Frame")
-Container.Parent = MainFrame
+local Container = Instance.new("Frame", MainFrame)
 Container.BackgroundTransparency = 1
-Container.Position = UDim2.new(0.05, 0, 0.22, 0)
-Container.Size = UDim2.new(0.9, 0, 0.75, 0)
+Container.Position = UDim2.new(0.04, 0, 0.21, 0)
+Container.Size = UDim2.new(0.92, 0, 0.76, 0)
 
 -- ================= TAB MAIN =================
-local MainContainer = Instance.new("Frame")
-MainContainer.Parent = Container
+local MainContainer = Instance.new("Frame", Container)
 MainContainer.BackgroundTransparency = 1
-MainContainer.Size = UDim2.new(1, 1, 1, 1)
-MainContainer.Visible = true
+MainContainer.Size = UDim2.new(1, 0, 1, 0)
 
-local SaveBtn = Instance.new("TextButton")
-SaveBtn.Parent = MainContainer
-SaveBtn.BackgroundColor3 = Color3.fromRGB(230, 80, 150)
-SaveBtn.Size = UDim2.new(1, 0, 0, 36)
-SaveBtn.Font = Enum.Font.GothamBold
-SaveBtn.Text = "📍 Lưu Vị Trí Đứng Ném"
-SaveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-SaveBtn.TextSize = 12
-local SC = Instance.new("UICorner"); SC.CornerRadius = UDim.new(0, 8); SC.Parent = SaveBtn
-
-local PosLabel = Instance.new("TextLabel")
-PosLabel.Parent = MainContainer
+local PosLabel = Instance.new("TextLabel", MainContainer)
 PosLabel.BackgroundTransparency = 1
-PosLabel.Position = UDim2.new(0, 0, 0.28, 0)
-PosLabel.Size = UDim2.new(1, 0, 0, 18)
-PosLabel.Font = Enum.Font.Gotham
-if settings.savedPos then
-    PosLabel.Text = string.format("Đã lưu: X:%.0f, Y:%.0f, Z:%.0f", settings.savedPos.X, settings.savedPos.Y, settings.savedPos.Z)
-    PosLabel.TextColor3 = Color3.fromRGB(100, 255, 140)
-else
-    PosLabel.Text = "Chưa lưu vị trí"
-    PosLabel.TextColor3 = Color3.fromRGB(220, 220, 100)
-end
+PosLabel.Position = UDim2.new(0, 0, 0.05, 0)
+PosLabel.Size = UDim2.new(1, 0, 0, 24)
+PosLabel.Font = Enum.Font.GothamBold
+PosLabel.Text = "📍 Điểm Ném: X:0, Y:6, Z:-45"
+PosLabel.TextColor3 = Color3.fromRGB(100, 255, 140)
 PosLabel.TextSize = 11
 
-local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Parent = MainContainer
-ToggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
-ToggleBtn.Position = UDim2.new(0, 0, 0.44, 0)
-ToggleBtn.Size = UDim2.new(1, 0, 0, 40)
+local SellPosLabel = Instance.new("TextLabel", MainContainer)
+SellPosLabel.BackgroundTransparency = 1
+SellPosLabel.Position = UDim2.new(0, 0, 0.18, 0)
+SellPosLabel.Size = UDim2.new(1, 0, 0, 24)
+SellPosLabel.Font = Enum.Font.GothamBold
+SellPosLabel.Text = "💰 Điểm Bán: X:55, Y:6, Z:-28"
+SellPosLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+SellPosLabel.TextSize = 11
+
+local ToggleBtn = Instance.new("TextButton", MainContainer)
+ToggleBtn.BackgroundColor3 = settings.autoFarmEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
+ToggleBtn.Position = UDim2.new(0, 0, 0.35, 0)
+ToggleBtn.Size = UDim2.new(1, 0, 0, 42)
 ToggleBtn.Font = Enum.Font.GothamBold
-ToggleBtn.Text = "ROSE HUB: TẮT"
+ToggleBtn.Text = settings.autoFarmEnabled and "ROSE HUB: BẬT" or "ROSE HUB: TẮT"
 ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleBtn.TextSize = 14
-local TC = Instance.new("UICorner"); TC.CornerRadius = UDim.new(0, 8); TC.Parent = ToggleBtn
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 8)
 
-local StatusBox = Instance.new("TextLabel")
-StatusBox.Parent = MainContainer
+local StatusBox = Instance.new("TextLabel", MainContainer)
 StatusBox.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-StatusBox.Position = UDim2.new(0, 0, 0.68, 0)
-StatusBox.Size = UDim2.new(1, 0, 0, 55)
+StatusBox.Position = UDim2.new(0, 0, 0.58, 0)
+StatusBox.Size = UDim2.new(1, 0, 0, 75)
 StatusBox.Font = Enum.Font.Gotham
-StatusBox.Text = "1. Đứng trước vạch -> Bấm Lưu vị trí\n2. Bấm BẬT ROSE HUB để chạy"
-StatusBox.TextColor3 = Color3.fromRGB(150, 150, 150)
+StatusBox.Text = "Hệ thống đã sẵn sàng tự động ném, trang bị pet và di chuyển bán hàng!"
+StatusBox.TextColor3 = Color3.fromRGB(180, 180, 180)
 StatusBox.TextSize = 10
 StatusBox.TextWrapped = true
-local SBC = Instance.new("UICorner"); SBC.CornerRadius = UDim.new(0, 8); SBC.Parent = StatusBox
+Instance.new("UICorner", StatusBox).CornerRadius = UDim.new(0, 8)
 
--- ================= TAB SETTING =================
-local SettingContainer = Instance.new("ScrollingFrame")
-SettingContainer.Parent = Container
-SettingContainer.BackgroundTransparency = 1
-SettingContainer.Size = UDim2.new(1, 1, 1, 1)
-SettingContainer.CanvasSize = UDim2.new(0, 0, 1.4, 0)
-SettingContainer.ScrollBarThickness = 3
-SettingContainer.Visible = false
+-- ================= TAB CUSTOMIZE =================
+local CustomContainer = Instance.new("ScrollingFrame", Container)
+CustomContainer.BackgroundTransparency = 1
+CustomContainer.Size = UDim2.new(1, 0, 1, 0)
+CustomContainer.CanvasSize = UDim2.new(0, 0, 1.4, 0)
+CustomContainer.ScrollBarThickness = 3
+CustomContainer.Visible = false
 
-local function createInput(name, defaultVal, posY)
-    local label = Instance.new("TextLabel")
-    label.Parent = SettingContainer
+local ModeBtn = Instance.new("TextButton", CustomContainer)
+ModeBtn.BackgroundColor3 = settings.teleportMode and Color3.fromRGB(50, 150, 250) or Color3.fromRGB(80, 100, 200)
+ModeBtn.Size = UDim2.new(1, 0, 0, 32)
+ModeBtn.Font = Enum.Font.GothamBold
+ModeBtn.Text = "Di chuyển: " .. (settings.teleportMode and "TELEPORT (Tức thì)" or "TWEEN (Mượt mà)")
+ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModeBtn.TextSize = 11
+Instance.new("UICorner", ModeBtn).CornerRadius = UDim.new(0, 8)
+
+local function createCustomInput(name, defaultVal, posY)
+    local label = Instance.new("TextLabel", CustomContainer)
     label.BackgroundTransparency = 1
     label.Position = UDim2.new(0, 0, posY, 0)
-    label.Size = UDim2.new(0.65, 0, 0, 24)
+    label.Size = UDim2.new(0.60, 0, 0, 26)
     label.Font = Enum.Font.Gotham
     label.Text = name
     label.TextColor3 = Color3.fromRGB(180, 180, 180)
     label.TextSize = 11
     label.TextXAlignment = Enum.TextXAlignment.Left
 
-    local input = Instance.new("TextBox")
-    input.Parent = SettingContainer
+    local input = Instance.new("TextBox", CustomContainer)
     input.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-    input.Position = UDim2.new(0.70, 0, posY, 0)
-    input.Size = UDim2.new(0.30, 0, 0, 24)
+    input.Position = UDim2.new(0.65, 0, posY, 0)
+    input.Size = UDim2.new(0.35, 0, 0, 26)
     input.Font = Enum.Font.GothamBold
     input.Text = tostring(defaultVal)
     input.TextColor3 = Color3.fromRGB(255, 150, 200)
     input.TextSize = 11
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 6); corner.Parent = input
-
+    Instance.new("UICorner", input).CornerRadius = UDim.new(0, 6)
     return input
 end
 
-local SpeedInput = createInput("Tốc độ Tween:", settings.tweenSpeed, 0.02)
-local ChargeInput = createInput("TG thanh lực (s):", settings.throwChargeTime, 0.16)
-local TimeThrowInput = createInput("Đợi sau ném (s):", settings.waitTimeAfterThrow, 0.30)
-local TimeRespawnInput = createInput("Đợi hồi sinh (s):", settings.waitTimeAfterRespawn, 0.44)
+local SpeedInput = createCustomInput("Tốc độ Tween:", settings.tweenSpeed, 0.16)
+local ThrowsInput = createCustomInput("Số lần ném trước bán:", settings.throwsBeforeSell, 0.30)
+local SellWaitInput = createCustomInput("TG chờ bán (s):", settings.sellWaitTime, 0.44)
+local ChargeInput = createCustomInput("TG giữ thanh lực (s):", settings.throwChargeTime, 0.58)
+local TimeThrowInput = createCustomInput("Đợi sau ném (s):", settings.waitTimeAfterThrow, 0.72)
+local TimeRespawnInput = createCustomInput("Đợi hồi sinh (s):", settings.waitTimeAfterRespawn, 0.86)
 
--- Nút Bật/Tắt Anti AFK
-local AntiAfkBtn = Instance.new("TextButton")
-AntiAfkBtn.Parent = SettingContainer
+-- ================= TAB SETTING =================
+local SettingContainer = Instance.new("ScrollingFrame", Container)
+SettingContainer.BackgroundTransparency = 1
+SettingContainer.Size = UDim2.new(1, 0, 1, 0)
+SettingContainer.CanvasSize = UDim2.new(0, 0, 1.2, 0)
+SettingContainer.ScrollBarThickness = 3
+SettingContainer.Visible = false
+
+local AntiAfkBtn = Instance.new("TextButton", SettingContainer)
 AntiAfkBtn.BackgroundColor3 = settings.antiAfkEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
-AntiAfkBtn.Position = UDim2.new(0, 0, 0.58, 0)
-AntiAfkBtn.Size = UDim2.new(1, 0, 0, 30)
+AntiAfkBtn.Size = UDim2.new(1, 0, 0, 34)
 AntiAfkBtn.Font = Enum.Font.GothamBold
 AntiAfkBtn.Text = "Anti AFK: " .. (settings.antiAfkEnabled and "BẬT" or "TẮT")
 AntiAfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 AntiAfkBtn.TextSize = 11
-local AABtnCorner = Instance.new("UICorner"); AABtnCorner.CornerRadius = UDim.new(0, 6); AABtnCorner.Parent = AntiAfkBtn
+Instance.new("UICorner", AntiAfkBtn).CornerRadius = UDim.new(0, 6)
 
--- Nút Bật/Tắt Anti Lag 
-local AntiLagBtn = Instance.new("TextButton")
-AntiLagBtn.Parent = SettingContainer
+local AutoEquipBtn = Instance.new("TextButton", SettingContainer)
+AutoEquipBtn.BackgroundColor3 = settings.autoEquipPet and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
+AutoEquipBtn.Position = UDim2.new(0, 0, 0.20, 0)
+AutoEquipBtn.Size = UDim2.new(1, 0, 0, 34)
+AutoEquipBtn.Font = Enum.Font.GothamBold
+AutoEquipBtn.Text = "Auto Trang bị Pet: " .. (settings.autoEquipPet and "BẬT" or "TẮT")
+AutoEquipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoEquipBtn.TextSize = 11
+Instance.new("UICorner", AutoEquipBtn).CornerRadius = UDim.new(0, 6)
+
+local AntiLagBtn = Instance.new("TextButton", SettingContainer)
 AntiLagBtn.BackgroundColor3 = settings.antiLagEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
-AntiLagBtn.Position = UDim2.new(0, 0, 0.72, 0)
-AntiLagBtn.Size = UDim2.new(1, 0, 0, 30)
+AntiLagBtn.Position = UDim2.new(0, 0, 0.40, 0)
+AntiLagBtn.Size = UDim2.new(1, 0, 0, 34)
 AntiLagBtn.Font = Enum.Font.GothamBold
 AntiLagBtn.Text = "Anti Lag (Ẩn Pet): " .. (settings.antiLagEnabled and "BẬT" or "TẮT")
 AntiLagBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 AntiLagBtn.TextSize = 11
-local ALBtnCorner = Instance.new("UICorner"); ALBtnCorner.CornerRadius = UDim.new(0, 6); ALBtnCorner.Parent = AntiLagBtn
+Instance.new("UICorner", AntiLagBtn).CornerRadius = UDim.new(0, 6)
 
--- Nút Xóa Cài Đặt
-local ResetBtn = Instance.new("TextButton")
-ResetBtn.Parent = SettingContainer
+local ResetBtn = Instance.new("TextButton", SettingContainer)
 ResetBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
-ResetBtn.Position = UDim2.new(0, 0, 0.88, 0)
-ResetBtn.Size = UDim2.new(1, 0, 0, 34)
+ResetBtn.Position = UDim2.new(0, 0, 0.60, 0)
+ResetBtn.Size = UDim2.new(1, 0, 0, 36)
 ResetBtn.Font = Enum.Font.GothamBold
-ResetBtn.Text = "🗑️ Xóa Cài Đặt & Vị Trí"
+ResetBtn.Text = "🗑️ Reset Cài Đặt"
 ResetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ResetBtn.TextSize = 11
-local RC = Instance.new("UICorner"); RC.CornerRadius = UDim.new(0, 6); RC.Parent = ResetBtn
+Instance.new("UICorner", ResetBtn).CornerRadius = UDim.new(0, 6)
 
 -- Chuyển Tab
-TabMainBtn.MouseButton1Click:Connect(function()
-    MainContainer.Visible = true
-    SettingContainer.Visible = false
-    TabMainBtn.BackgroundColor3 = Color3.fromRGB(230, 80, 150)
-    TabMainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabSettingBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-    TabSettingBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+local function switchTab(activeBtn, activeContainer)
+    for _, btn in ipairs({TabMainBtn, TabCustomBtn, TabSettingBtn}) do
+        btn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+        btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end
+    for _, cont in ipairs({MainContainer, CustomContainer, SettingContainer}) do
+        cont.Visible = false
+    end
+    activeBtn.BackgroundColor3 = Color3.fromRGB(230, 80, 150)
+    activeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    activeContainer.Visible = true
+end
+
+TabMainBtn.MouseButton1Click:Connect(function() switchTab(TabMainBtn, MainContainer) end)
+TabCustomBtn.MouseButton1Click:Connect(function() switchTab(TabCustomBtn, CustomContainer) end)
+TabSettingBtn.MouseButton1Click:Connect(function() switchTab(TabSettingBtn, SettingContainer) end)
+
+-- Sự kiện chức năng
+ModeBtn.MouseButton1Click:Connect(function()
+    settings.teleportMode = not settings.teleportMode
+    ModeBtn.Text = "Di chuyển: " .. (settings.teleportMode and "TELEPORT (Tức thì)" or "TWEEN (Mượt mà)")
+    ModeBtn.BackgroundColor3 = settings.teleportMode and Color3.fromRGB(50, 150, 250) or Color3.fromRGB(80, 100, 200)
+    saveConfig()
 end)
 
-TabSettingBtn.MouseButton1Click:Connect(function()
-    MainContainer.Visible = false
-    SettingContainer.Visible = true
-    TabSettingBtn.BackgroundColor3 = Color3.fromRGB(230, 80, 150)
-    TabSettingBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabMainBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-    TabMainBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
-end)
-
--- Xử lý Anti AFK
 AntiAfkBtn.MouseButton1Click:Connect(function()
     settings.antiAfkEnabled = not settings.antiAfkEnabled
     AntiAfkBtn.Text = "Anti AFK: " .. (settings.antiAfkEnabled and "BẬT" or "TẮT")
@@ -330,226 +333,227 @@ AntiAfkBtn.MouseButton1Click:Connect(function()
     saveConfig()
 end)
 
--- Logic Anti AFK chạy ngầm
-task.spawn(function()
-    while true do
-        task.wait(50)
-        if settings.antiAfkEnabled then
-            pcall(function()
-                local vu = game:GetService("VirtualUser")
-                vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-                task.wait(1)
-                vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-            end)
-        end
-    end
+AutoEquipBtn.MouseButton1Click:Connect(function()
+    settings.autoEquipPet = not settings.autoEquipPet
+    AutoEquipBtn.Text = "Auto Trang bị Pet: " .. (settings.autoEquipPet and "BẬT" or "TẮT")
+    AutoEquipBtn.BackgroundColor3 = settings.autoEquipPet and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
+    saveConfig()
 end)
 
--- Thuật toán Anti Lag thông minh: Ẩn/Xóa Pet, hiệu ứng thừa từ từ từng đợt tránh crash game
-local function applyAntiLag(state)
+local function runAntiLag()
+    if not settings.antiLagEnabled then return end
     task.spawn(function()
         pcall(function()
-            if state then
-                settings.antiLagEnabled = true
-                Lighting.GlobalShadows = false
-                Lighting.Brightness = 2
-                
-                -- Duyệt qua toàn bộ workspace với tốc độ chậm rãi, chia nhỏ để không bị lag khung hình
-                local descendants = workspace:GetDescendants()
-                for i = 1, #descendants do
-                    local v = descendants[i]
-                    if v then
-                        -- Nhận diện và xóa/ẩn Pet hoặc các vật thể mô hình phụ xung quanh gây nặng máy
-                        if v:IsA("Model") and (string.find(v.Name:lower(), "pet") or string.find(v.Name:lower(), "animal") or string.find(v.Name:lower(), "egg")) then
-                            if not v:IsAncestorOf(localPlayer.Character) then
-                                v:Destroy() -- Xóa hẳn Pet và vật phẩm xung quanh để giải phóng RAM
+            Lighting.GlobalShadows = false
+            local items = workspace:GetDescendants()
+            for i = 1, #items do
+                if not settings.antiLagEnabled then break end
+                local v = items[i]
+                if v and v.Parent then
+                    if v:IsA("Model") and (v.Name:lower():find("pet") or v.Name:lower():find("animal")) then
+                        if localPlayer.Character and not v:IsAncestorOf(localPlayer.Character) then
+                            for _, part in ipairs(v:GetDescendants()) do
+                                if part:IsA("BasePart") or part:IsA("Decal") then
+                                    part.Transparency = 1
+                                end
                             end
-                        elseif v:IsA("BasePart") then
-                            v.Material = Enum.Material.SmoothPlastic
-                            v.Reflectance = 0
-                        elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Fire") or v:IsA("Smoke") or v:IsA("Beam") then
-                            v.Enabled = false -- Tắt toàn bộ hiệu ứng nặng
                         end
-                    end
-                    
-                    -- Cứ xử lý 40 phần tử thì nghỉ 1 nhịp để game chạy siêu mượt, tuyệt đối không bị văng
-                    if i % 40 == 0 then
-                        RunService.RenderStepped:Wait()
+                    elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Beam") then
+                        v.Enabled = false
                     end
                 end
-            else
-                settings.antiLagEnabled = false
-                Lighting.GlobalShadows = true
+                if i % 60 == 0 then RunService.RenderStepped:Wait() end
             end
-            saveConfig()
         end)
     end)
 end
 
 AntiLagBtn.MouseButton1Click:Connect(function()
-    local newState = not settings.antiLagEnabled
-    AntiLagBtn.Text = "Anti Lag (Ẩn Pet): " .. (newState and "BẬT" or "TẮT")
-    AntiLagBtn.BackgroundColor3 = newState and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
-    applyAntiLag(newState)
-end)
-
--- Lưu cấu hình Input
-SpeedInput.FocusLost:Connect(function()
-    local val = tonumber(SpeedInput.Text)
-    if val and val > 0 then settings.tweenSpeed = val else SpeedInput.Text = tostring(settings.tweenSpeed) end
-    saveConfig()
-end)
-ChargeInput.FocusLost:Connect(function()
-    local val = tonumber(ChargeInput.Text)
-    if val and val > 0 then settings.throwChargeTime = val else ChargeInput.Text = tostring(settings.throwChargeTime) end
-    saveConfig()
-end)
-TimeThrowInput.FocusLost:Connect(function()
-    local val = tonumber(TimeThrowInput.Text)
-    if val and val >= 0 then settings.waitTimeAfterThrow = val else TimeThrowInput.Text = tostring(settings.waitTimeAfterThrow) end
-    saveConfig()
-end)
-TimeRespawnInput.FocusLost:Connect(function()
-    local val = tonumber(TimeRespawnInput.Text)
-    if val and val >= 0 then settings.waitTimeAfterRespawn = val else TimeRespawnInput.Text = tostring(settings.waitTimeAfterRespawn) end
+    settings.antiLagEnabled = not settings.antiLagEnabled
+    AntiLagBtn.Text = "Anti Lag (Ẩn Pet): " .. (settings.antiLagEnabled and "BẬT" or "TẮT")
+    AntiLagBtn.BackgroundColor3 = settings.antiLagEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
+    if settings.antiLagEnabled then runAntiLag() else Lighting.GlobalShadows = true end
     saveConfig()
 end)
 
--- Nút lưu vị trí
-SaveBtn.MouseButton1Click:Connect(function()
-    local char = localPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        settings.savedPos = hrp.CFrame
-        PosLabel.Text = string.format("Đã lưu: X:%.0f, Y:%.0f, Z:%.0f", settings.savedPos.X, settings.savedPos.Y, settings.savedPos.Z)
-        PosLabel.TextColor3 = Color3.fromRGB(100, 255, 140)
-        saveConfig()
-    end
-end)
+SpeedInput.FocusLost:Connect(function() local v = tonumber(SpeedInput.Text) if v and v > 0 then settings.tweenSpeed = v else SpeedInput.Text = tostring(settings.tweenSpeed) end saveConfig() end)
+ThrowsInput.FocusLost:Connect(function() local v = tonumber(ThrowsInput.Text) if v and v > 0 then settings.throwsBeforeSell = v else ThrowsInput.Text = tostring(settings.throwsBeforeSell) end saveConfig() end)
+SellWaitInput.FocusLost:Connect(function() local v = tonumber(SellWaitInput.Text) if v and v >= 0 then settings.sellWaitTime = v else SellWaitInput.Text = tostring(settings.sellWaitTime) end saveConfig() end)
+ChargeInput.FocusLost:Connect(function() local v = tonumber(ChargeInput.Text) if v and v > 0 then settings.throwChargeTime = v else ChargeInput.Text = tostring(settings.throwChargeTime) end saveConfig() end)
+TimeThrowInput.FocusLost:Connect(function() local v = tonumber(TimeThrowInput.Text) if v and v >= 0 then settings.waitTimeAfterThrow = v else TimeThrowInput.Text = tostring(settings.waitTimeAfterThrow) end saveConfig() end)
+TimeRespawnInput.FocusLost:Connect(function() local v = tonumber(TimeRespawnInput.Text) if v and v >= 0 then settings.waitTimeAfterRespawn = v else TimeRespawnInput.Text = tostring(settings.waitTimeAfterRespawn) end saveConfig() end)
 
--- Nút xóa cài đặt
 ResetBtn.MouseButton1Click:Connect(function()
     settings.autoFarmEnabled = false
-    settings.antiAfkEnabled = false
-    settings.antiLagEnabled = false
-    settings.savedPos = nil
     settings.tweenSpeed = 45
+    settings.throwsBeforeSell = 5
+    settings.sellWaitTime = 1.5
     settings.throwChargeTime = 1.5
     settings.waitTimeAfterThrow = 2.0
     settings.waitTimeAfterRespawn = 1.0
+    pcall(function() if delfile and isfile and isfile(configFileName) then delfile(configFileName) end end)
+    
+    SpeedInput.Text = "45"
+    ThrowsInput.Text = "5"
+    SellWaitInput.Text = "1.5"
+    ChargeInput.Text = "1.5"
+    TimeThrowInput.Text = "2"
+    TimeRespawnInput.Text = "1"
+    ToggleBtn.Text = "ROSE HUB: TẮT"
+    ToggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
+    StatusBox.Text = "🗑️ Đã reset về mặc định!"
+end)
 
+ToggleBtn.MouseButton1Click:Connect(function()
+    settings.autoFarmEnabled = not settings.autoFarmEnabled
+    ToggleBtn.Text = settings.autoFarmEnabled and "ROSE HUB: BẬT" or "ROSE HUB: TẮT"
+    ToggleBtn.BackgroundColor3 = settings.autoFarmEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(220, 50, 90)
+    if not settings.autoFarmEnabled then StatusBox.Text = "Đã tạm dừng." end
+    saveConfig()
+end)
+
+-- Anti AFK
+localPlayer.Idled:Connect(function()
+    if settings.antiAfkEnabled then
+        pcall(function()
+            local vu = game:GetService("VirtualUser")
+            vu:CaptureController()
+            vu:ClickButton2(Vector2.new())
+        end)
+    end
+end)
+
+-- Hàm kích hoạt ném
+local function triggerThrow(char)
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if tool then pcall(function() tool:Activate() end) end
+    local cam = workspace.CurrentCamera
+    if cam then
+        local centerX, centerY = cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2
+        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
+    end
+end
+
+-- Hàm di chuyển chống lỗi (Hỗ trợ Tween mượt hoặc Teleport)
+local function moveToTarget(targetCFrame)
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if settings.teleportMode then
+        hrp.CFrame = targetCFrame
+        task.wait(settings.teleportDelay)
+    else
+        local dist = (hrp.Position - targetCFrame.Position).Magnitude
+        if dist < 2 then return end
+        local tween = TweenService:Create(hrp, TweenInfo.new(dist / settings.tweenSpeed, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
+        tween:Play()
+        while tween.PlaybackState == Enum.PlaybackState.Playing do
+            if not settings.autoFarmEnabled then tween:Cancel() return end
+            task.wait(0.05)
+        end
+    end
+end
+
+-- Hàm tự động trang bị Pet (Kích hoạt Remote / Click nút tối ưu pet)
+local function autoEquipBestPet()
+    if not settings.autoEquipPet then return end
     pcall(function()
-        if delfile and isfile and isfile(configFileName) then
-            delfile(configFileName)
+        -- Quét và tìm Remote liên quan đến Pet hoặc nút trang bị tốt nhất
+        for _, rem in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+            if rem:IsA("RemoteEvent") and (rem.Name:lower():find("pet") or rem.Name:lower():find("equip") or rem.Name:lower():find("best")) then
+                rem:FireServer("EquipBest")
+                rem:FireServer("EquipAllBest")
+            end
+        end
+    end)
+end
+
+-- Hàm tự động bán đồ tại X:55, Y:6, Z:-28[span_5](start_span)[span_5](end_span)
+local function performAutoSell()
+    StatusBox.Text = "Đang di chuyển đi bán đồ..."
+    moveToTarget(CFrame.new(SELL_POS))
+    task.wait(0.5)
+
+    StatusBox.Text = "Đang kích hoạt bán tất cả..."
+    pcall(function()
+        -- Tìm Remote Event bán hàng trong game để gọi trực tiếp (chính xác 100%)
+        for _, rem in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+            if rem:IsA("RemoteEvent") and (rem.Name:lower():find("sell") or rem.Name:lower():find("bay") or rem.Name:lower():find("store")) then
+                rem:FireServer("SellAll")
+                rem:FireServer("Sell")
+            end
+        end
+        -- Mô phỏng click vào màn hình hoặc nút Bán tất cả[span_6](start_span)[span_6](end_span)
+        local cam = workspace.CurrentCamera
+        if cam then
+            local cx, cy = cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
         end
     end)
 
-    PosLabel.Text = "Chưa lưu vị trí"
-    PosLabel.TextColor3 = Color3.fromRGB(220, 220, 100)
-    SpeedInput.Text = tostring(settings.tweenSpeed)
-    ChargeInput.Text = tostring(settings.throwChargeTime)
-    TimeThrowInput.Text = tostring(settings.waitTimeAfterThrow)
-    TimeRespawnInput.Text = tostring(settings.waitTimeAfterRespawn)
-    AntiAfkBtn.Text = "Anti AFK: TẮT"
-    AntiAfkBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
-    AntiLagBtn.Text = "Anti Lag (Ẩn Pet): TẮT"
-    AntiLagBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
-    
-    ToggleBtn.Text = "ROSE HUB: TẮT"
-    ToggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
-    StatusBox.Text = "🗑️ Đã xóa sạch cài đặt & vị trí cũ!"
-    StatusBox.TextColor3 = Color3.fromRGB(255, 100, 100)
-end)
-
--- Nút Bật/Tắt ROSE HUB
-ToggleBtn.MouseButton1Click:Connect(function()
-    if not settings.savedPos and not settings.autoFarmEnabled then
-        StatusBox.Text = "⚠️ Bạn chưa lưu vị trí đứng ném!"
-        StatusBox.TextColor3 = Color3.fromRGB(255, 100, 100)
-        return
-    end
-
-    settings.autoFarmEnabled = not settings.autoFarmEnabled
-    if settings.autoFarmEnabled then
-        ToggleBtn.Text = "ROSE HUB: BẬT"
-        ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 205, 120)
-        StatusBox.TextColor3 = Color3.fromRGB(200, 200, 200)
-    else
-        ToggleBtn.Text = "ROSE HUB: TẮT"
-        ToggleBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 90)
-        StatusBox.Text = "Đã dừng hệ thống ROSE HUB."
-    end
-end)
-
--- Hàm Tween nhân vật
-local function tweenBackToSavedPos(hrp)
-    if not settings.savedPos or not hrp then return end
-    local distance = (hrp.Position - settings.savedPos.Position).Magnitude
-    if distance < 2 then return end
-
-    local duration = distance / settings.tweenSpeed
-    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
-    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = settings.savedPos})
-    tween:Play()
-
-    while tween.PlaybackState == Enum.PlaybackState.Playing do
-        if not settings.autoFarmEnabled then
-            tween:Cancel()
-            break
-        end
-        task.wait(0.05)
-    end
+    task.wait(settings.sellWaitTime)
 end
 
--- Click màn hình
-local function clickScreen()
-    local viewportSize = workspace.CurrentCamera.ViewportSize
-    local centerX, centerY = viewportSize.X / 2, viewportSize.Y / 2
-    VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
-    task.wait(0.05)
-    VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
-end
-
--- Vòng lặp chính
+-- Vòng lặp chính quản lý Ném - Bán - Trang bị Pet
 task.spawn(function()
+    local throwCounter = 0
+
     while true do
-        task.wait(0.1)
-        if settings.autoFarmEnabled and settings.savedPos then
+        task.wait(0.15)
+        if settings.autoFarmEnabled then
             local char = localPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
             if char and hrp and hum and hum.Health > 0 then
-                StatusBox.Text = "Đang Tween về vị trí ném..."
-                tweenBackToSavedPos(hrp)
+                -- 1. Kiểm tra xem đã đến lúc đi bán đồ chưa
+                if throwCounter >= settings.throwsBeforeSell then
+                    performAutoSell()
+                    throwCounter = 0
+                    if not settings.autoFarmEnabled then continue end
+                end
+
+                -- 2. Di chuyển về điểm ném cố định (X:0, Y:6, Z:-45)
+                StatusBox.Text = "Đang di chuyển tới vạch ném..."
+                moveToTarget(CFrame.new(THROW_POS))
                 if not settings.autoFarmEnabled then continue end
 
                 task.wait(0.2)
 
-                clickScreen()
-                StatusBox.Text = "Đang chạy thanh lực..."
+                -- 3. Trang bị Pet tốt nhất (qua Remote)
+                autoEquipBestPet()
 
-                local startTime = tick()
-                while tick() - startTime < settings.throwChargeTime do
+                -- 4. Gồng lực và ném
+                StatusBox.Text = "Đang gồng lực (" .. settings.throwChargeTime .. "s)..."
+                triggerThrow(char)
+
+                local t0 = tick()
+                while tick() - t0 < settings.throwChargeTime do
                     if not settings.autoFarmEnabled then break end
                     RunService.RenderStepped:Wait()
                 end
-
                 if not settings.autoFarmEnabled then continue end
 
-                clickScreen()
-                StatusBox.Text = "Đã ném! Đang chờ kết quả..."
+                StatusBox.Text = "Đang ném..."
+                triggerThrow(char)
+                throwCounter = throwCounter + 1
 
                 task.wait(settings.waitTimeAfterThrow)
                 if not settings.autoFarmEnabled then continue end
 
-                if char and char:FindFirstChildOfClass("Humanoid") then
+                -- 5. Reset nhân vật để về điểm spawn/chuẩn bị lượt mới
+                StatusBox.Text = "Đang Reset nhân vật..."
+                if char:FindFirstChildOfClass("Humanoid") then
                     char:FindFirstChildOfClass("Humanoid").Health = 0
                 end
 
-                StatusBox.Text = "Đang chờ nhân vật hồi sinh..."
                 localPlayer.CharacterAdded:Wait()
-                task.wait(settings.waitTimeAfterRespawn) 
+                task.wait(settings.waitTimeAfterRespawn)
             end
         end
     end
