@@ -127,7 +127,7 @@ local TitleText = Instance.new("TextLabel", TitleBar)
 TitleText.BackgroundTransparency = 1
 TitleText.Size = UDim2.new(1, 0, 1, 0)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.Text = "🌸 ROSE HUB V8 (AUTO SELL)"
+TitleText.Text = "🌸 ROSE HUB "
 TitleText.TextColor3 = Color3.fromRGB(255, 150, 200)
 TitleText.TextSize = 12
 
