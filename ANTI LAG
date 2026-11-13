@@ -1,0 +1,277 @@
+-- LocalScript: Anti Lag + FPS Counter (client-side)
+-- Đặt trong StarterPlayer > StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+-- ===== CẤU HÌNH =====
+local CONFIG = {
+	BatchSize = 25,          -- số vật thể xử lý mỗi frame
+	MaxFrameTime = 8,        -- ms tối đa dành cho dọn dẹp mỗi frame
+	CleanRadius = 150,       -- vật thể cách người chơi xa hơn mức này sẽ bị ẩn
+	EffectBatch = 200,       -- số hiệu ứng xử lý trước khi nghỉ một nhịp
+	ToggleKey = Enum.KeyCode.RightControl,
+}
+
+local POST_EFFECT_CLASSES = {
+	BloomEffect = true, BlurEffect = true, ColorCorrectionEffect = true,
+	SunRaysEffect = true, DepthOfFieldEffect = true,
+}
+local PARTICLE_CLASSES = {
+	ParticleEmitter = true, Trail = true, Beam = true,
+	Fire = true, Smoke = true, Sparkles = true,
+}
+
+-- ===== TRẠNG THÁI =====
+local antiLagEnabled = false
+local originalStates = {}     -- trạng thái gốc của part
+local effectStates = {}       -- trạng thái gốc của hiệu ứng
+local processQueue = {}
+local queueIndex = 1
+local originalFogEnd = Lighting.FogEnd
+local originalGlobalShadows = Lighting.GlobalShadows
+
+-- ===== HÀM TIỆN ÍCH =====
+local function getRoot()
+	local char = player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getDistance(part)
+	local root = getRoot()
+	if not root then return 0 end
+	return (part.Position - root.Position).Magnitude
+end
+
+local function isSafeToHide(obj)
+	if player.Character and obj:IsDescendantOf(player.Character) then return false end
+	local model = obj:FindFirstAncestorOfClass("Model")
+	if model and model:FindFirstChildOfClass("Humanoid") then return false end
+	if obj.CanCollide then return false end
+	return true
+end
+
+-- ===== ANTI LAG: ẨN VẬT THỂ XA =====
+local function applyLag(obj)
+	if not obj:IsA("BasePart") then return end
+	if originalStates[obj] then return end
+	if not isSafeToHide(obj) then return end
+
+	originalStates[obj] = {
+		CastShadow = obj.CastShadow,
+	}
+
+	if getDistance(obj) > CONFIG.CleanRadius then
+		obj.LocalTransparencyModifier = 1
+	end
+	obj.CastShadow = false
+end
+
+local function restoreParts()
+	for obj, state in pairs(originalStates) do
+		if obj and obj.Parent then
+			obj.LocalTransparencyModifier = 0
+			obj.CastShadow = state.CastShadow
+		end
+	end
+	originalStates = {}
+end
+
+local function buildQueue()
+	processQueue = {}
+	queueIndex = 1
+	local root = getRoot()
+	if not root then return end
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			table.insert(processQueue, obj)
+		end
+	end
+	-- Ưu tiên vật xa người chơi xử lý trước
+	table.sort(processQueue, function(a, b)
+		return getDistance(a) > getDistance(b)
+	end)
+end
+
+-- ===== TẮT HIỆU ỨNG (bloom, sương, particle, bóng...) =====
+local function disableEffect(obj)
+	if effectStates[obj] then return end
+	if obj:IsA("Atmosphere") then
+		effectStates[obj] = { Density = obj.Density }
+		obj.Density = 0
+	elseif POST_EFFECT_CLASSES[obj.ClassName] or PARTICLE_CLASSES[obj.ClassName] then
+		effectStates[obj] = { Enabled = obj.Enabled }
+		obj.Enabled = false
+	end
+end
+
+local function restoreEffects()
+	for obj, state in pairs(effectStates) do
+		if obj and obj.Parent then
+			if state.Density then
+				obj.Density = state.Density
+			else
+				obj.Enabled = state.Enabled
+			end
+		end
+	end
+	effectStates = {}
+end
+
+-- Quét hiệu ứng theo đợt, nghỉ mỗi EffectBatch vật thể để không giật
+local function sweepEffects(container)
+	task.spawn(function()
+		local count = 0
+		for _, obj in ipairs(container:GetDescendants()) do
+			if not antiLagEnabled then return end
+			disableEffect(obj)
+			count += 1
+			if count % CONFIG.EffectBatch == 0 then task.wait() end
+		end
+	end)
+end
+
+-- ===== VÒNG LẶP DỌN DẸP THEO ĐỢT =====
+RunService.Heartbeat:Connect(function()
+	if not antiLagEnabled then return end
+	if queueIndex > #processQueue then return end
+
+	local startTime = os.clock()
+	local processed = 0
+
+	while queueIndex <= #processQueue and processed < CONFIG.BatchSize do
+		if (os.clock() - startTime) * 1000 > CONFIG.MaxFrameTime then break end
+		applyLag(processQueue[queueIndex])
+		queueIndex += 1
+		processed += 1
+	end
+end)
+
+-- ===== BẬT / TẮT ANTI LAG =====
+local function applyEffects(on)
+	if on then
+		Lighting.GlobalShadows = false
+		Lighting.FogEnd = 1e9
+		sweepEffects(Lighting)
+		sweepEffects(Workspace)
+	else
+		Lighting.GlobalShadows = originalGlobalShadows
+		Lighting.FogEnd = originalFogEnd
+		restoreEffects()
+	end
+end
+
+-- ===== FPS COUNTER =====
+local fpsCount = 0
+local fpsTimer = 0
+local currentFPS = 0
+
+RunService.RenderStepped:Connect(function(dt)
+	fpsCount += 1
+	fpsTimer += dt
+	if fpsTimer >= 0.5 then
+		currentFPS = math.floor(fpsCount / fpsTimer)
+		fpsCount = 0
+		fpsTimer = 0
+	end
+end)
+
+-- ===== MENU GIAO DIỆN =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AntiLagMenu"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(190, 110)
+frame.Position = UDim2.new(0, 16, 0, 16)
+frame.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+frame.BorderSizePixel = 0
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(90, 140, 255)
+stroke.Thickness = 1
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -12, 0, 26)
+title.Position = UDim2.fromOffset(12, 6)
+title.BackgroundTransparency = 1
+title.Text = "Anti Lag"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextColor3 = Color3.fromRGB(235, 235, 245)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local fpsLabel = Instance.new("TextLabel")
+fpsLabel.Size = UDim2.new(1, -12, 0, 20)
+fpsLabel.Position = UDim2.fromOffset(12, 30)
+fpsLabel.BackgroundTransparency = 1
+fpsLabel.Text = "FPS: --"
+fpsLabel.Font = Enum.Font.Gotham
+fpsLabel.TextSize = 13
+fpsLabel.TextColor3 = Color3.fromRGB(120, 255, 170)
+fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
+fpsLabel.Parent = frame
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -24, 0, 36)
+toggleBtn.Position = UDim2.fromOffset(12, 60)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+toggleBtn.Text = "Bật Anti Lag"
+toggleBtn.Font = Enum.Font.GothamSemibold
+toggleBtn.TextSize = 14
+toggleBtn.TextColor3 = Color3.fromRGB(240, 240, 250)
+toggleBtn.BorderSizePixel = 0
+toggleBtn.AutoButtonColor = false
+toggleBtn.Parent = frame
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+
+local function setEnabled(state)
+	antiLagEnabled = state
+	if state then
+		buildQueue()
+		applyEffects(true)
+		toggleBtn.Text = "Tắt Anti Lag"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(70, 110, 230)
+	else
+		restoreParts()
+		applyEffects(false)
+		toggleBtn.Text = "Bật Anti Lag"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+	end
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+	setEnabled(not antiLagEnabled)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == CONFIG.ToggleKey then
+		setEnabled(not antiLagEnabled)
+	end
+end)
+
+-- Hiệu ứng mới xuất hiện khi đang bật Anti Lag cũng sẽ bị tắt
+Workspace.DescendantAdded:Connect(function(obj)
+	if antiLagEnabled then task.defer(disableEffect, obj) end
+end)
+Lighting.ChildAdded:Connect(function(obj)
+	if antiLagEnabled then task.defer(disableEffect, obj) end
+end)
+
+-- Cập nhật FPS lên menu
+task.spawn(function()
+	while true do
+		fpsLabel.Text = "FPS: " .. currentFPS
+		task.wait(0.25)
+	end
+end)
