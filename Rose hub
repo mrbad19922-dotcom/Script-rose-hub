@@ -127,7 +127,7 @@ local TitleText = Instance.new("TextLabel", TitleBar)
 TitleText.BackgroundTransparency = 1
 TitleText.Size = UDim2.new(1, 0, 1, 0)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.Text = " ROSE HUB BETA 
+TitleText.Text = "🌸 ROSE HUB beta "
 TitleText.TextColor3 = Color3.fromRGB(255, 150, 200)
 TitleText.TextSize = 12
 
@@ -181,7 +181,7 @@ SellPosLabel.BackgroundTransparency = 1
 SellPosLabel.Position = UDim2.new(0, 0, 0.18, 0)
 SellPosLabel.Size = UDim2.new(1, 0, 0, 24)
 SellPosLabel.Font = Enum.Font.GothamBold
-SellPosLabel.Text = "💰 Điểm Bán: X:55, Y:6, Z:-28"
+SellPosLabel.Text = "SellPosLabel.Text = "💰 Điểm Bán: X:55, Y:6, Z:-28"art_span)"[span_4](end_span)
 SellPosLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
 SellPosLabel.TextSize = 11
 
@@ -295,7 +295,7 @@ ResetBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
 ResetBtn.Position = UDim2.new(0, 0, 0.60, 0)
 ResetBtn.Size = UDim2.new(1, 0, 0, 36)
 ResetBtn.Font = Enum.Font.GothamBold
-ResetBtn.Text = " Reset Cài Đặt"
+ResetBtn.Text = "🗑️ Reset Cài Đặt"
 ResetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ResetBtn.TextSize = 11
 Instance.new("UICorner", ResetBtn).CornerRadius = UDim.new(0, 6)
